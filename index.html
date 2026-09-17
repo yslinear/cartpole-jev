@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CartPole × Jev — a decision model playing a control task</title>
+<meta name="description" content="Watch TypeSafe's Jev balance a CartPole in real time. Bring your own API key, edit the questions live, and read the decision log.">
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="statusDot" data-state="idle"></span>
+    <h1>CartPole <span class="times">×</span> Jev</h1>
+  </div>
+  <p class="tagline">
+    A decision model balancing an inverted pendulum. No vision, no RL training — just
+    <em>state</em>, <em>questions</em>, and probabilities a program can act on.
+  </p>
+</header>
+
+<main>
+  <!-- ---------------------------------------------------------------- stage -->
+  <section class="stage card">
+    <canvas id="view" width="900" height="420" aria-label="CartPole simulation"></canvas>
+
+    <div class="readout" id="readout"></div>
+
+    <div class="controls">
+      <button id="btnStart" class="primary">Start</button>
+      <button id="btnReset">Reset</button>
+      <label class="ctl">
+        <span>Decisions / sec</span>
+        <input id="rate" type="range" min="1" max="20" step="1" value="10">
+        <output id="rateOut">10</output>
+      </label>
+      <label class="ctl">
+        <span>Sim speed</span>
+        <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1">
+        <output id="speedOut">1×</output>
+      </label>
+      <label class="ctl checkbox">
+        <input id="autorestart" type="checkbox" checked>
+        <span>Auto-restart episodes</span>
+      </label>
+    </div>
+  </section>
+
+  <!-- --------------------------------------------------------------- config -->
+  <aside class="side">
+
+    <section class="card">
+      <h2>Connection</h2>
+      <label class="field">
+        <span>TypeSafe API key</span>
+        <input id="apiKey" type="password" placeholder="ts_..." autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Proxy URL</span>
+        <input id="proxyUrl" type="url" placeholder="https://your-worker.workers.dev" spellcheck="false">
+      </label>
+      <p class="hint" id="proxyHint"></p>
+      <label class="field">
+        <span>Model</span>
+        <input id="model" type="text" value="jev-latest" spellcheck="false">
+      </label>
+      <div class="row">
+        <button id="btnTest">Test connection</button>
+        <button id="btnForget" class="ghost">Forget key</button>
+      </div>
+      <p class="hint">
+        Your key is stored in this browser's localStorage only and is sent to
+        <strong>your</strong> proxy, which forwards it to api.typesafe.ai.
+        Nothing here logs it.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>How Jev sees the state</h2>
+      <div class="segmented" id="reprSeg" role="tablist"></div>
+      <p class="hint" id="reprHint"></p>
+      <pre class="state-preview" id="statePreview"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Which answer drives the cart</h2>
+      <div class="segmented" id="policySeg" role="tablist"></div>
+      <p class="hint" id="policyHint"></p>
+      <details>
+        <summary>The question set sent every frame</summary>
+        <pre class="json-preview" id="questionPreview"></pre>
+        <p class="hint" id="questionCost"></p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Scoreboard</h2>
+      <dl class="stats" id="stats"></dl>
+      <p class="hint">
+        Random play scores ~22. A five-line <code>if</code> rule scores ~200–500.
+        Every step the pole stays up is +1, and the hard cap is 500.
+      </p>
+    </section>
+
+  </aside>
+
+  <!-- ------------------------------------------------------------------ log -->
+  <section class="card logcard">
+    <div class="loghead">
+      <h2>Live decision log</h2>
+      <div class="row">
+        <label class="ctl checkbox small">
+          <input id="verbose" type="checkbox">
+          <span>Verbose</span>
+        </label>
+        <button id="btnClearLog" class="ghost small">Clear</button>
+      </div>
+    </div>
+    <div class="log" id="log" aria-live="polite"></div>
+  </section>
+</main>
+
+<footer>
+  <p>
+    Physics is a faithful JS port of Gymnasium's CartPole-v1 (explicit Euler, 50 Hz).
+    Built to explore <a href="https://docs.typesafe.ai" target="_blank" rel="noopener">TypeSafe System One / Jev</a>.
+  </p>
+</footer>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>

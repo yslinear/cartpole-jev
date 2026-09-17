@@ -1,0 +1,14 @@
+name = "typesafe-cors-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Optional: restrict which web origins may use this proxy.
+# Leave as "*" for a public demo, or list your Pages origin, e.g.
+#   ALLOWED_ORIGINS = "https://yslinear.github.io"
+[vars]
+ALLOWED_ORIGINS = "*"
+
+# Optional shared secret. If set, clients must send X-Proxy-Token.
+# Set with:  wrangler secret put PROXY_TOKEN
+# [vars]
+# PROXY_TOKEN = ""

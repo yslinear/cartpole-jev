@@ -1,0 +1,19 @@
+{
+  "name": "cartpole-jev",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Watch TypeSafe's Jev balance an inverted pendulum in the browser: a decision model used as a programming primitive.",
+  "scripts": {
+    "dev": "node tools/dev-proxy.mjs",
+    "test:physics": "node test/compare.mjs",
+    "test:limit": "node test/interval-limit.mjs",
+    "test:tokens": "node test/token-split.mjs",
+    "test:play": "node test/play-headless.mjs",
+    "test:sweep": "node test/sweep.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

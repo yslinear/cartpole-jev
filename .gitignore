@@ -1,0 +1,19 @@
+# dependencies (there are none at runtime, but just in case)
+node_modules/
+
+# wrangler
+worker/.wrangler/
+worker/node_modules/
+
+# local env / secrets -- never commit an API key
+.env
+.env.*
+*.local
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# scratch output from the Firecrawl/CLI tooling
+.firecrawl/
