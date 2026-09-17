@@ -25,7 +25,7 @@
  */
 
 import {
-  stepForce, resetState, MAX_STEPS, TAU, FORCE_MAG, X_THRESHOLD, THETA_THRESHOLD, toDegrees, describeState,
+  stepForce, resetState, MAX_STEPS, TAU, FORCE_MAG, X_THRESHOLD, toDegrees, describeState,
 } from './cartpole.js';
 import { REPRESENTATIONS, buildState } from './state.js';
 import { QUESTIONS, POLICIES, questionChars } from './questions.js';
@@ -54,6 +54,10 @@ function loadSettings() {
     syncSpeed: true,           // derive simSpeed from the measured API latency
     shoveN: 1,                 // newton-seconds per click
     jevForceN: 4,              // newtons
+    // Degrees of lean before the episode is called over. 12 is Gymnasium's and
+    // is the default in the tests; the app starts wider because 12 degrees is
+    // very little room once decisions are spaced out.
+    giveUpDeg: 20,
     autorestart: true, verbose: false,
     ...saved,
   };
@@ -62,9 +66,9 @@ function loadSettings() {
 const settings = loadSettings();
 
 function persist() {
-  const { apiKey, model, representation, policy, rate, simSpeed, syncSpeed, shoveN, jevForceN, autorestart, verbose } = settings;
+  const { apiKey, model, representation, policy, rate, simSpeed, syncSpeed, shoveN, jevForceN, giveUpDeg, autorestart, verbose } = settings;
   localStorage.setItem(LS_KEY, JSON.stringify({
-    apiKey, model, representation, policy, rate, simSpeed, syncSpeed, shoveN, jevForceN, autorestart, verbose,
+    apiKey, model, representation, policy, rate, simSpeed, syncSpeed, shoveN, jevForceN, giveUpDeg, autorestart, verbose,
   }));
 }
 
@@ -73,6 +77,10 @@ const accelOf = (N) => Math.abs(N) / TOTAL_MASS_KG;
 
 /** Jev's push in newtons, signed: positive is to the right. */
 const signedJevForce = () => (jevAction === 1 ? jevMagnitude : -jevMagnitude);
+
+/** The configured failure angle, in radians. */
+const giveUpRad = () => (settings.giveUpDeg * Math.PI) / 180;
+const limits = () => ({ theta: giveUpRad() });
 
 /**
  * How much simulation time one decision may cover.
@@ -241,30 +249,34 @@ function render(now = 0) {
   // on it, coloured by how close the pole is to the limit.
   const pivotY = groundY - cartH;
   const angleDeg = toDegrees(state.theta);
-  const R = Math.max(56, Math.min(96, poleLenPx * 0.46));
-  const frac = Math.min(1, Math.abs(angleDeg) / toDegrees(THETA_THRESHOLD));
+  const limitDeg = settings.giveUpDeg;
+  // Scale with the pole. An earlier cap of 96 px looked fine on a narrow canvas
+  // and became an unreadable squiggle on a wide one, because the pole grows with
+  // the canvas and the protractor did not.
+  const R = Math.max(64, Math.min(poleLenPx * 0.72, viewH * 0.34));
+  const frac = Math.min(1, Math.abs(angleDeg) / limitDeg);
   const arcColour = frac > 0.75 ? '#ef6b6b' : frac > 0.45 ? '#f0a04b' : '#45d6c3';
 
   // upright reference
   ctx.beginPath();
   ctx.moveTo(pivotX, pivotY);
-  ctx.lineTo(pivotX, pivotY - R - 24);
+  ctx.lineTo(pivotX, pivotY - R - 26);
   ctx.strokeStyle = 'rgba(143,163,186,.30)';
   ctx.setLineDash([2, 6]);
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // tick marks, the last one being the failure angle
-  const limitDeg = toDegrees(THETA_THRESHOLD);
-  for (const deg of [3, 6, 9, limitDeg]) {
+  // ticks, spread across the configured limit so they stay meaningful when it is
+  // not the usual 12 degrees
+  const tickDegs = [0.25, 0.5, 0.75, 1].map((f) => f * limitDeg);
+  for (const deg of tickDegs) {
     const isLimit = deg === limitDeg;
     for (const dir of [-1, 1]) {
       const a = -Math.PI / 2 + dir * ((deg * Math.PI) / 180);
-      const inner = R + 6;
-      const outer = R + (isLimit ? 15 : 9);
+      const outer = R + (isLimit ? 16 : 9);
       ctx.beginPath();
-      ctx.moveTo(pivotX + Math.cos(a) * inner, pivotY + Math.sin(a) * inner);
+      ctx.moveTo(pivotX + Math.cos(a) * (R + 6), pivotY + Math.sin(a) * (R + 6));
       ctx.lineTo(pivotX + Math.cos(a) * outer, pivotY + Math.sin(a) * outer);
       ctx.strokeStyle = isLimit ? 'rgba(239,107,107,.55)' : 'rgba(143,163,186,.28)';
       ctx.lineWidth = isLimit ? 2 : 1;
@@ -279,20 +291,6 @@ function render(now = 0) {
   ctx.lineWidth = 3;
   ctx.lineCap = 'butt';
   ctx.stroke();
-
-  // the number, halfway round that arc
-  const labelA = -Math.PI / 2 + state.theta / 2;
-  ctx.font = '600 12px ui-monospace, Menlo, monospace';
-  ctx.fillStyle = arcColour;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(
-    `${angleDeg >= 0 ? '+' : '−'}${Math.abs(angleDeg).toFixed(1)}°`,
-    pivotX + Math.cos(labelA) * (R + 26),
-    pivotY + Math.sin(labelA) * (R + 26),
-  );
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
 
   // pole-tip trail
   if (trail.length > 1) {
@@ -361,6 +359,27 @@ function render(now = 0) {
 
   trail.push({ x: tipX, y: tipY });
   if (trail.length > 110) trail.shift();
+
+  // ---- the angle readout, drawn last so the pole cannot paint over it -------
+  // It used to be drawn with the rest of the protractor, which meant the pole
+  // ran straight through the digits: "-0.1" rendered as "-0 1". The chip gives
+  // it a readable backing whatever is underneath.
+  const labelA = -Math.PI / 2 + state.theta / 2;
+  const labelX = pivotX + Math.cos(labelA) * (R + 30);
+  const labelY = pivotY + Math.sin(labelA) * (R + 30);
+  const labelText = `${angleDeg >= 0 ? '+' : '−'}${Math.abs(angleDeg).toFixed(1)}°`;
+
+  ctx.font = '600 12px ui-monospace, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(labelText).width;
+  ctx.fillStyle = 'rgba(11,16,23,.88)';
+  roundRect(ctx, labelX - tw / 2 - 5, labelY - 9, tw + 10, 18, 5);
+  ctx.fill();
+  ctx.fillStyle = arcColour;
+  ctx.fillText(labelText, labelX, labelY + 1);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
 
   // HUD. Every line advances `line`; hard-coded y values collided once, which
   // is how "synced to ..." ended up drawn on top of the Jev line.
@@ -483,7 +502,11 @@ let lastPreview = 0;
 function renderPreview(now = 0) {
   if (now - lastPreview < 100) return;
   lastPreview = now;
-  $('statePreview').textContent = JSON.stringify(buildState(state, settings.representation), null, 2);
+  $('statePreview').textContent = JSON.stringify(
+    buildState(state, settings.representation, { thetaLimitRad: giveUpRad() }),
+    null,
+    2,
+  );
 
   const d = describeState(state);
   $('readout').innerHTML = [
@@ -589,7 +612,7 @@ async function decide() {
   try {
     const out = await askJev({
       apiKey: $('apiKey').value.trim(),
-      state: buildState(snapshot, settings.representation),
+      state: buildState(snapshot, settings.representation, { thetaLimitRad: giveUpRad() }),
       questions: QUESTIONS,
       model: $('model').value.trim() || DEFAULT_MODEL,
     });
@@ -619,7 +642,7 @@ async function decide() {
     );
 
     if (settings.verbose) {
-      log('raw', esc(JSON.stringify({ state: buildState(snapshot, settings.representation), answers: a }, null, 1)));
+      log('raw', esc(JSON.stringify({ state: buildState(snapshot, settings.representation, { thetaLimitRad: giveUpRad() }), answers: a }, null, 1)));
     }
   } catch (err) {
     stop();
@@ -660,7 +683,7 @@ function frame(now) {
         pendingShove = 0;
       }
 
-      const r = stepForce(state, f);
+      const r = stepForce(state, f, limits());
       state = r.state;
       score += r.reward;
 
@@ -739,6 +762,17 @@ function wire() {
   $('speedOut').textContent = `${settings.simSpeed}×`;
   $('shove').value = settings.shoveN;
   $('shoveOut').textContent = `${settings.shoveN} N·s`;
+  $('giveUp').value = String(settings.giveUpDeg);
+  $('giveUp').onchange = (e) => {
+    const was = settings.giveUpDeg;
+    settings.giveUpDeg = +e.target.value;
+    persist();
+    log(
+      'episode',
+      `give up angle ${was}° → <b>${settings.giveUpDeg}°</b>` +
+        (settings.giveUpDeg === 12 ? ' (the Gymnasium value; the physics is exact there)' : ' (a deliberate departure — the dynamics are unchanged, only where the run ends)'),
+    );
+  };
   $('jevForce').value = settings.jevForceN;
   $('jevForceOut').textContent = `${settings.jevForceN} N`;
   $('autorestart').checked = settings.autorestart;

@@ -108,6 +108,12 @@ main {
 .ctl { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .ctl input[type=range] { width: 104px; accent-color: var(--accent); }
 .ctl output { font-family: var(--mono); color: var(--text); min-width: 34px; }
+.ctl select {
+  font-family: var(--mono); font-size: 12px;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 7px; padding: 5px 7px;
+}
+.ctl select:focus { outline: none; border-color: var(--accent-dim); }
 .ctl.checkbox { gap: 6px; }
 .ctl.checkbox input { accent-color: var(--accent); }
 .ctl.small { font-size: 11px; }

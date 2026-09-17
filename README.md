@@ -320,6 +320,43 @@ control impossible, the physics has to be slowed to match.
 
 ---
 
+## How much room does the pole need?
+
+CartPole ends the episode at 12° of lean. That is a tight budget, and once decisions are
+spaced out it is the binding constraint rather than the controller. The limit is now a setting —
+physics untouched, only where a run is called over — and the model is told the real figure in
+its state, so it does not bail out of situations it could still save.
+
+A hand-written PD controller, force 4 N, no model error at all, over the same start state:
+
+| give-up angle | score at 160 ms hold | score at 240 ms hold |
+|---|---|---|
+| ±12° | 72 *(peak 12.1° — hit the wall)* | 14 |
+| **±20°** | 373 *(peak 9.2° — never came close)* | 23 |
+| **±30°** | **428** | 34 |
+| ±45° | 249 | 40 |
+| ±60° | 190 | 58 |
+
+Two different things are going on, and telling them apart matters.
+
+At a **160 ms** hold, a wider limit genuinely helps: 72 becomes 428, and the peak angle stays
+well inside the new boundary, which means the controller is recovering rather than surviving.
+The 12° row is the odd one out — its peak *equals* its limit, so it failed immediately.
+
+At a **240 ms** hold, a wider limit only delays the fall. Look at the peaks: 12.7°, 20.7°,
+30.6°, 45.7°, 60.6° — every one runs all the way to its boundary. The score rises with the
+limit because there is further to fall, not because anything is under control.
+
+And wider is not monotonically better. 45° and 60° score worse than 20° and 30° even at 160 ms:
+a pole that far over is harder to bring back, so the extra room costs more than it buys. The
+useful range is roughly 20–30°, which is why the app starts at 20°.
+
+```bash
+node test/interval-limit.mjs      # the same idea for hold time, no API calls
+```
+
+---
+
 ## Can Jev decide how hard to push?
 
 Yes, and it is the difference between bang-bang control and something closer to proportional.

@@ -55,6 +55,17 @@
         <input id="shove" type="range" min="0.2" max="5" step="0.2" value="1">
         <output id="shoveOut">1 N·s</output>
       </label>
+      <label class="ctl">
+        <span>Give up at</span>
+        <select id="giveUp">
+          <option value="8">±8°</option>
+          <option value="12">±12° — CartPole standard</option>
+          <option value="20">±20°</option>
+          <option value="30">±30°</option>
+          <option value="45">±45°</option>
+          <option value="60">±60°</option>
+        </select>
+      </label>
       <label class="ctl checkbox">
         <input id="autorestart" type="checkbox" checked>
         <span>Auto-restart episodes</span>
@@ -73,11 +84,12 @@
       (42 at 10 N, 188 at 6 N, 68 at 4 N), while 4 N held for 2 steps scores a clean 500.
     </p>
     <p class="hint">
-      The decisions/sec slider is only a request. One API call takes a few hundred milliseconds, so
-      the browser cannot honour it — which is why <strong>Match speed to API latency</strong> is on by
-      default: the world is slowed until a single decision covers about 40 ms of it, the interval at
-      which a controller can actually hold the pole. Uncheck it to play in real time and watch Jev
-      lose, which is also informative.
+      <strong>Give up at</strong> is how far the pole may lean before the episode ends. 12° is
+      Gymnasium's value and the app starts at 20° on purpose: 12° is a tight budget once decisions
+      are spaced out, and the model is told the real figure so it does not bail out of situations it
+      could still save. Everything changes together — the physics, the ticks on the protractor, and
+      the sentence Jev reads — but the dynamics themselves never change; only where the run is called
+      over.
     </p>
   </section>
 

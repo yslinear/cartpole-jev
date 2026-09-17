@@ -41,8 +41,16 @@ export function resetState() {
  * equivalence still holds.
  *
  * A force of 0 is legal and means the cart coasts.
+ *
+ * `limits` optionally overrides the failure bounds. The defaults are Gymnasium's
+ * and no caller passes anything in the equivalence test, so that stays exact;
+ * the app passes a wider angle because 12 degrees leaves a controller very little
+ * room to recover once the world is slow enough to think in.
  */
-export function stepForce(state, force) {
+export function stepForce(state, force, limits = {}) {
+  const thetaLimit = limits.theta ?? THETA_THRESHOLD;
+  const xLimit = limits.x ?? X_THRESHOLD;
+
   let { x, xDot, theta, thetaDot } = state;
   const costheta = Math.cos(theta);
   const sintheta = Math.sin(theta);
@@ -61,7 +69,7 @@ export function stepForce(state, force) {
 
   const next = { x, xDot, theta, thetaDot };
   const terminated =
-    x < -X_THRESHOLD || x > X_THRESHOLD || theta < -THETA_THRESHOLD || theta > THETA_THRESHOLD;
+    x < -xLimit || x > xLimit || theta < -thetaLimit || theta > thetaLimit;
 
   return { state: next, reward: 1, terminated };
 }
@@ -71,8 +79,8 @@ export function stepForce(state, force) {
  * *explicit* Euler (they call it "euler"); the semi-implicit variant is opt-in.
  * We match the default so the trajectories are identical.
  */
-export function step(state, action) {
-  return stepForce(state, action === ACTION_RIGHT ? FORCE_MAG : -FORCE_MAG);
+export function step(state, action, limits) {
+  return stepForce(state, action === ACTION_RIGHT ? FORCE_MAG : -FORCE_MAG, limits);
 }
 
 /** Degrees are friendlier than radians when we talk to a language model. */
@@ -93,3 +101,11 @@ export function describeState(state) {
     angleRateDeg,
   };
 }
+
+/**
+ * The angle limits offered in the UI, in degrees. 12 is Gymnasium's; the rest
+ * are deliberate departures, because 12 degrees is a tight budget once decisions
+ * are spaced out. The physics is untouched either way -- only where the episode
+ * is called over.
+ */
+export const GIVE_UP_DEGREES = [8, 12, 20, 30, 45, 60];

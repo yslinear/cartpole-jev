@@ -33,7 +33,7 @@ function raw(s) {
 // ---------------------------------------------------------------------------
 // representation 2: plain prose, one sentence per physical quantity
 // ---------------------------------------------------------------------------
-function prose(s) {
+function prose(s, thetaLimitRad) {
   const angleDeg = toDegrees(s.theta);
   const rateDeg = toDegrees(s.thetaDot);
   const pct = (abs(s.x) / X_THRESHOLD) * 100;
@@ -47,10 +47,21 @@ function prose(s) {
       ? 'roughly holding its angle'
       : `rotating further ${side(rateDeg)} at ${abs(rateDeg).toFixed(0)}°/s`;
 
+  // Say how much room is left. With the limit raised well past the usual 12
+  // degrees, a model that assumes 12 will start bailing out of recoverable
+  // situations, so the budget has to be part of the state.
+  const budget = abs(angleDeg) / toDegrees(thetaLimitRad);
+  const room =
+    budget > 0.75
+      ? ` That is most of the way to the ${toDegrees(thetaLimitRad).toFixed(0)}° limit.`
+      : budget > 0.4
+        ? ` There is still room to correct before the ${toDegrees(thetaLimitRad).toFixed(0)}° limit.`
+        : '';
+
   return [
     `Cart: ${where} (${pct.toFixed(0)}% of the way to the end of the track), ${cartMove}.`,
-    `Pole: leaning ${lean}, and ${fall}.`,
-    `The episode ends if the pole passes ${toDegrees(THETA_THRESHOLD).toFixed(0)}° from upright or the cart reaches the end of the track.`,
+    `Pole: leaning ${lean}, and ${fall}.${room}`,
+    `The episode ends if the pole passes ${toDegrees(thetaLimitRad).toFixed(0)}° from upright, or if the cart reaches the end of the track.`,
   ].join('\n');
 }
 
@@ -63,11 +74,16 @@ function bucket(v, edges, labels) {
   return labels[labels.length - 1];
 }
 
-function coarse(s) {
+function coarse(s, thetaLimitRad) {
   const angleDeg = toDegrees(s.theta);
   const rateDeg = toDegrees(s.thetaDot);
+  const limit = toDegrees(thetaLimitRad);
+  // Buckets spread across whatever limit is configured, so they stay meaningful
+  // when it is not the usual 12 degrees.
+  const cuts = [limit * 0.1, limit * 0.4, limit * 0.7, limit * 0.9];
+  const labels = ['nearly upright', 'leaning slightly', 'leaning noticeably', 'leaning a lot', 'about to fall'];
 
-  const lean = bucket(angleDeg, [1, 5, 9, 12], ['nearly upright', 'leaning slightly', 'leaning noticeably', 'leaning a lot', 'about to fall']);
+  const lean = bucket(angleDeg, cuts, labels);
   const fall = bucket(rateDeg, [5, 20, 60], ['barely rotating', 'drifting', 'falling steadily', 'falling fast']);
   const place = bucket(s.x, [0.6, 1.5, 2.0, 2.4], ['near the centre', 'off-centre', 'near the end', 'almost out of track', 'out']);
   const drift = bucket(s.xDot, [0.2, 0.8], ['almost still', 'drifting', 'sliding fast']);
@@ -96,7 +112,7 @@ export const REPRESENTATIONS = {
   },
 };
 
-export function buildState(state, representation) {
+export function buildState(state, representation, options = {}) {
   const spec = REPRESENTATIONS[representation] ?? REPRESENTATIONS.prose;
-  return spec.build(state);
+  return spec.build(state, options.thetaLimitRad ?? THETA_THRESHOLD);
 }
