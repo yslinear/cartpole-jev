@@ -15,8 +15,9 @@
     <h1>CartPole <span class="times">×</span> Jev</h1>
   </div>
   <p class="tagline">
-    A decision model balancing an inverted pendulum. No vision, no RL training — just
-    <em>state</em>, <em>questions</em>, and probabilities a program can act on.
+    A decision model balancing an inverted pendulum — while you try to knock it over.
+    No vision, no RL training: just <em>state</em>, <em>questions</em>, and probabilities
+    a program can act on, with a shove you can deliver at any moment.
   </p>
 </header>
 
@@ -46,9 +47,9 @@
         <output id="jevForceOut">10 N</output>
       </label>
       <label class="ctl">
-        <span>Your push</span>
-        <input id="humanForce" type="range" min="2" max="20" step="1" value="10">
-        <output id="humanForceOut">10 N</output>
+        <span>Shove strength</span>
+        <input id="shove" type="range" min="0.2" max="5" step="0.2" value="1">
+        <output id="shoveOut">1 N·s</output>
       </label>
       <label class="ctl checkbox">
         <input id="autorestart" type="checkbox" checked>
@@ -56,18 +57,11 @@
       </label>
     </div>
 
-    <div class="playbar">
-      <div class="segmented" id="modeSeg" role="tablist"></div>
-      <div class="pushpad">
-        <button id="pushLeft" class="push push-left" aria-label="Push the cart left">
-          <span class="key">←</span> Left
-        </button>
-        <button id="pushRight" class="push push-right" aria-label="Push the cart right">
-          Right <span class="key">→</span>
-        </button>
-      </div>
-    </div>
-    <p class="hint" id="modeHint"></p>
+    <p class="hint">
+      <strong>Click either side of the cart to shove it</strong> — left of it shoves left, right of it
+      shoves right. Arrow keys do the same. Jev keeps balancing throughout; a shove is an impulse it
+      cannot predict, and it has to recover.
+    </p>
   </section>
 
   <!-- --------------------------------------------------------------- config -->
@@ -113,13 +107,9 @@
     </section>
 
     <section class="card">
-      <h2>You vs Jev</h2>
-      <p class="hint" id="h2hIntro"></p>
-      <dl class="stats" id="head2head"></dl>
-      <p class="hint">
-        Steps are credited to whoever commanded them, so a takeover episode is split
-        correctly between you and the model.
-      </p>
+      <h2>How hard is it to knock over</h2>
+      <p class="hint" id="shoveIntro"></p>
+      <dl class="stats" id="shoveStats"></dl>
     </section>
 
     <section class="card">

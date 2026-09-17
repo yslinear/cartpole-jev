@@ -1,23 +1,27 @@
 /**
- * CartPole x Jev -- with a human fighting for the cart.
+ * CartPole x Jev.
  *
- * Three modes:
+ * Jev's only job is to keep the pole up. Your only job is to knock it over.
  *
- *   jev     the model alone balances the pole                  (the baseline)
- *   human   you alone balance it, no API calls                 (your baseline)
- *   versus  BOTH push the same cart at the same time
+ * There is no competition and no takeover: the model is always the controller,
+ * and you are a disturbance. Click either side of the cart and it takes a shove;
+ * Jev then has to recover from a kick it could not have predicted.
  *
- * The versus mode is force addition, not a takeover:
+ * The shove is an impulse, and it reuses the verified dynamics rather than
+ * inventing new physics: an impulse of J newton-seconds is delivered as
  *
- *   net force = (jev pushing right ? +10 : -10) + (you holding a key ? +/-10 : 0)
+ *     force = J / TAU        for exactly one 20 ms physics step
  *
- * so opposing pushes cancel to 0 N and the cart simply coasts while the pole
- * falls. With nobody touching the keys, the arithmetic degenerates to the stock
- * CartPole action and the Gymnasium equivalence still holds exactly.
+ * so the coupling (the pole swinging because the cart was hit) falls out of the
+ * same equations that test/compare.mjs checks against Gymnasium.
  *
- * Jev is told about you in the state it receives (see src/state.js). If that
- * sentence were removed it would have no way to know its pushes were being
- * cancelled -- which is the whole point of the mode.
+ * Everything else follows the shape this project has always had:
+ *
+ *   - physics runs on a fixed 50 Hz timestep, in real time, scaled by sim speed
+ *   - QUESTIONS is built once and re-sent unchanged on every decision
+ *   - only `state` differs between calls
+ *   - several questions are asked per call; a policy decides in plain JavaScript
+ *     which answer drives the cart
  */
 
 import {
@@ -29,26 +33,9 @@ import { askJev, testConnection, DEFAULT_MODEL, BrowserBlockedError, ApiError } 
 
 const $ = (id) => document.getElementById(id);
 
-/* ------------------------------------------------------------------ modes -- */
-
-const MODES = {
-  jev: {
-    label: 'Jev alone',
-    hint: 'The model decides and the cart is pushed by it alone. This is the baseline the versus score is measured against.',
-  },
-  human: {
-    label: 'You alone',
-    hint: 'Hold ← / → (or A / D) to push. No API calls are made, so this is free — and it is your own baseline.',
-  },
-  versus: {
-    label: 'Versus',
-    hint: 'You and Jev push the same cart at once. Forces add: pushing against it cancels to 0 N and the cart coasts. Jev is told what you are doing — see if you can still beat it.',
-  },
-};
-
 /* --------------------------------------------------------------- settings -- */
 
-const LS_KEY = 'cartpole-jev-v2';
+const LS_KEY = 'cartpole-jev-v3';
 
 function loadSettings() {
   let saved = {};
@@ -56,12 +43,10 @@ function loadSettings() {
   return {
     apiKey: '', model: DEFAULT_MODEL,
     representation: 'prose', policy: 'threshold',
-    controlMode: 'jev',
-    // Newtons each side may apply. Default is FORCE_MAG, the standard CartPole
-    // value, so at the defaults the physics is still exactly Gymnasium's.
-    jevForceN: FORCE_MAG,
-    humanForceN: FORCE_MAG,
-    rate: 10, simSpeed: 1, autorestart: true, verbose: false,
+    rate: 10, simSpeed: 1,
+    shoveN: 1,                 // newton-seconds per click
+    jevForceN: FORCE_MAG,      // newtons; FORCE_MAG is the standard CartPole value
+    autorestart: true, verbose: false,
     ...saved,
   };
 }
@@ -69,32 +54,14 @@ function loadSettings() {
 const settings = loadSettings();
 
 function persist() {
-  const { apiKey, model, representation, policy, controlMode, rate, simSpeed, autorestart, verbose, jevForceN, humanForceN } = settings;
+  const { apiKey, model, representation, policy, rate, simSpeed, shoveN, jevForceN, autorestart, verbose } = settings;
   localStorage.setItem(LS_KEY, JSON.stringify({
-    apiKey, model, representation, policy, controlMode, rate, simSpeed, autorestart, verbose, jevForceN, humanForceN,
+    apiKey, model, representation, policy, rate, simSpeed, shoveN, jevForceN, autorestart, verbose,
   }));
 }
 
-/* ------------------------------------------------------------ human input -- */
-
-const human = { left: false, right: false };
-
-/** Total mass, so the UI can show what a given push actually does to the cart. */
-const TOTAL_MASS_KG = 1.1;
-
-/** -N, 0 or +N newtons. Holding both keys cancels out, which reads as "let go". */
-function humanForce() {
-  const n = settings.humanForceN;
-  return (human.left ? -n : 0) + (human.right ? n : 0);
-}
-
-/** What Jev pushes with, or 0 when it is not in control. */
-function jevForce() {
-  if (settings.controlMode === 'human') return 0;
-  return jevAction === 1 ? settings.jevForceN : -settings.jevForceN;
-}
-
-const humanPushing = () => settings.controlMode !== 'jev' && humanForce() !== 0;
+const TOTAL_MASS_KG = 1.1;                 // cart 1.0 + pole 0.1, from cartpole.js
+const accelOf = (N) => Math.abs(N) / TOTAL_MASS_KG;
 
 /* ------------------------------------------------------------------ state -- */
 
@@ -108,16 +75,19 @@ let lastFrameAt = 0;
 let lastDecisionAt = 0;
 let trail = [];
 let netForce = 0;
-let episodeMode = 'jev';
 
-/** Per-mode scoreboards, so the three modes never contaminate each other. */
-const boards = {
-  jev: { episodes: 0, total: 0, best: 0 },
-  human: { episodes: 0, total: 0, best: 0 },
-  versus: { episodes: 0, total: 0, best: 0 },
-};
+/** Newton-seconds queued for the very next physics step. */
+let pendingShove = 0;
+/** Screen position of the last click, for the ripple. */
+let shoveFx = null;
+
+/** A shove is "survived" if the episode lasts this many more steps. */
+const RECOVERY_STEPS = 25; // 0.5 s
 
 const stats = {
+  episodes: 0, best: 0, total: 0,
+  shoves: 0, recoveries: 0, knockdowns: 0,
+  lastShoveAt: -Infinity, unresolvedShove: false,
   decisions: 0, skipped: 0,
   inputTokens: 0, outputTokens: 0,
   latencySum: 0, lastLatency: 0, modelSeen: '',
@@ -171,26 +141,28 @@ function fitCanvas() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-const WORLD_HALF = 3.1;
-const px = (m) => (m / (WORLD_HALF * 2)) * viewW;
+const WORLD_HALF = 3.1;                       // metres shown either side of centre
+const SCALE = () => viewW / (WORLD_HALF * 2); // px per metre
+const px = (m) => m * SCALE();
+const pxToWorld = (clientX) => {
+  const rect = canvas.getBoundingClientRect();
+  return ((clientX - rect.left) / rect.width) * WORLD_HALF * 2 - WORLD_HALF;
+};
 
-/** A little force arrow. dir is -1/0/1, y is the vertical anchor. */
-function forceArrow(x, y, dir, colour) {
-  if (!dir) return;
+function forceArrow(x, y, dir, colour, len = 14) {
   ctx.fillStyle = colour;
   ctx.beginPath();
-  const len = 13 * Math.abs(dir);
   ctx.moveTo(x, y);
-  ctx.lineTo(x + dir * len, y - 5.5);
-  ctx.lineTo(x + dir * len, y + 5.5);
+  ctx.lineTo(x + dir * len, y - 6);
+  ctx.lineTo(x + dir * len, y + 6);
   ctx.closePath();
   ctx.fill();
 }
 
-function render() {
+function render(now = 0) {
   const groundY = viewH * 0.8;
   const midX = viewW / 2;
-  const scale = viewW / (WORLD_HALF * 2);
+  const s = SCALE();
 
   ctx.clearRect(0, 0, viewW, viewH);
 
@@ -202,7 +174,7 @@ function render() {
   ctx.fillRect(midX - trackHalf - 24, groundY - 3, 24, 12);
   ctx.fillRect(midX + trackHalf, groundY - 3, 24, 12);
 
-  const pivotX = midX + state.x * scale;
+  const pivotX = midX + state.x * s;
   const poleLenPx = px(1.0);
   const cartW = px(0.5);
   const cartH = 22;
@@ -237,25 +209,27 @@ function render() {
   ctx.fill();
   ctx.stroke();
 
-  // ---- forces, drawn separately so a deadlock is visible -------------------
-  const jevDir = jevAction === 1 ? 1 : -1;
-  const youDir = Math.sign(humanForce());
-  const edge = cartW / 2 + 3;
+  // Jev's push
+  const jf = settings.jevForceN * (jevAction === 1 ? 1 : -1);
+  forceArrow(pivotX + Math.sign(jf) * (cartW / 2 + 3), groundY - cartH * 0.5, Math.sign(jf), 'rgba(69,214,195,.9)');
 
-  if (settings.controlMode !== 'human') {
-    forceArrow(pivotX + jevDir * edge, groundY - cartH * 0.68, jevDir, 'rgba(69,214,195,.9)');
-  }
-  if (settings.controlMode !== 'jev' && youDir) {
-    forceArrow(pivotX + youDir * edge, groundY - cartH * 0.28, youDir, 'rgba(240,160,75,.95)');
-  }
-
-  // a cancelled push is the signature moment of versus mode -- call it out
-  if (settings.controlMode === 'versus' && netForce === 0 && youDir) {
-    ctx.font = '600 12px ui-monospace, Menlo, monospace';
-    ctx.fillStyle = 'rgba(240,160,75,.95)';
-    ctx.textAlign = 'center';
-    ctx.fillText('forces cancelled — cart is coasting', pivotX, groundY - cartH - poleLenPx * 1.15);
-    ctx.textAlign = 'left';
+  // shove ripple, fading
+  if (shoveFx) {
+    const age = (now - shoveFx.t) / 450;
+    if (age >= 1) {
+      shoveFx = null;
+    } else {
+      ctx.strokeStyle = `rgba(240,160,75,${(1 - age) * 0.9})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(shoveFx.x, shoveFx.y, 8 + age * 34, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = `rgba(240,160,75,${(1 - age) * 0.85})`;
+      ctx.font = '600 13px ui-monospace, Menlo, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(shoveFx.dir > 0 ? '→ shove' : 'shove ←', shoveFx.x, shoveFx.y - 16 - age * 12);
+      ctx.textAlign = 'left';
+    }
   }
 
   // pole
@@ -292,29 +266,23 @@ function render() {
   ctx.fillText(`score ${score}`, 14, 24);
   ctx.fillText(`step ${score}/500`, 14, 44);
   const held = Math.round(1000 / settings.rate);
-  ctx.fillText(`push held ${held} ms  (${held / (TAU * 1000)} physics steps)`, 14, 64);
+  ctx.fillText(`push held ${held} ms  (${(held / (TAU * 1000)).toFixed(0)} physics steps)`, 14, 64);
 
-  let line = 88;
-  if (settings.controlMode !== 'human') {
-    const jf = jevForce();
-    ctx.fillStyle = '#45d6c3';
-    ctx.fillText(`Jev  ${jf > 0 ? '→' : '←'} ${jf > 0 ? '+' : '−'}${Math.abs(jf)} N`, 14, line);
-    line += 20;
-  }
-  if (settings.controlMode !== 'jev') {
-    const hf = humanForce();
-    ctx.fillStyle = hf === 0 ? '#5d6b7e' : '#f0a04b';
-    ctx.fillText(`You  ${hf === 0 ? 'not pushing' : `${hf > 0 ? '→' : '←'} ${hf > 0 ? '+' : '−'}${Math.abs(hf)} N`}`, 14, line);
-    line += 20;
-  }
-  if (settings.controlMode === 'versus') {
-    ctx.fillStyle = netForce === 0 ? '#f0a04b' : '#8fa3ba';
-    ctx.fillText(`net  ${netForce > 0 ? '+' : ''}${netForce} N  →  ${Math.abs(netForce / TOTAL_MASS_KG).toFixed(1)} m/s²`, 14, line);
-    line += 20;
-  }
+  ctx.fillStyle = '#45d6c3';
+  ctx.fillText(`Jev  ${jf > 0 ? '→' : '←'} ${jf > 0 ? '+' : '−'}${Math.abs(jf)} N  →  ${accelOf(jf).toFixed(1)} m/s²`, 14, 88);
+
   if (inFlight) {
     ctx.fillStyle = '#f0a04b';
-    ctx.fillText('waiting for Jev…', 14, line);
+    ctx.fillText('waiting for Jev…', 14, 108);
+  }
+
+  // click hint, only until the first shove
+  if (stats.shoves === 0 && st() !== 'running') {
+    ctx.fillStyle = 'rgba(240,160,75,.75)';
+    ctx.font = '500 14px ui-sans-serif, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('click either side of the cart to shove it', midX, groundY - cartH - poleLenPx - 26);
+    ctx.textAlign = 'left';
   }
 }
 
@@ -328,7 +296,9 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
-/* ------------------------------------------------------------- scoreboards -- */
+const st = () => $('statusDot').dataset.state;
+
+/* -------------------------------------------------------------- scoreboard -- */
 
 let lastStatsRender = 0;
 
@@ -336,61 +306,48 @@ function renderStats(now = 0) {
   if (now - lastStatsRender < 120) return;
   lastStatsRender = now;
 
-  const avg = stats.decisions ? Math.round(stats.latencySum / stats.decisions) : 0;
+  const avgLatency = stats.decisions ? Math.round(stats.latencySum / stats.decisions) : 0;
+  const mean = stats.episodes ? stats.total / stats.episodes : 0;
 
   $('stats').innerHTML = `
     <dt>Current score</dt><dd class="${score > 200 ? 'good' : ''}">${score}</dd>
-    <dt>Episodes</dt><dd>${boards.jev.episodes + boards.human.episodes + boards.versus.episodes}</dd>
-    <dt>Decisions made</dt><dd>${stats.decisions}</dd>
-    <dt>Decisions skipped</dt><dd class="${stats.skipped > stats.decisions ? 'warn' : ''}">${stats.skipped}</dd>
+    <dt>Best episode</dt><dd class="${stats.best >= 500 ? 'good' : ''}">${stats.best || '—'}</dd>
+    <dt>Episodes</dt><dd>${stats.episodes}</dd>
+    <dt>Mean score</dt><dd>${stats.episodes ? mean.toFixed(1) : '—'}</dd>
+    <dt>Decisions</dt><dd>${stats.decisions}</dd>
+    <dt>Skipped</dt><dd class="${stats.skipped > stats.decisions ? 'warn' : ''}">${stats.skipped}</dd>
     <dt>Last latency</dt><dd>${stats.lastLatency ? `${stats.lastLatency} ms` : '—'}</dd>
-    <dt>Mean latency</dt><dd>${avg ? `${avg} ms` : '—'}</dd>
+    <dt>Mean latency</dt><dd>${avgLatency ? `${avgLatency} ms` : '—'}</dd>
     <dt>Tokens in / out</dt><dd>${stats.inputTokens} / ${stats.outputTokens}</dd>
-    <dt>Spend so far</dt><dd>${money(stats.inputTokens)}</dd>
-    <dt>Model reported</dt><dd>${esc(stats.modelSeen || '—')}</dd>
+    <dt>Spend</dt><dd>${money(stats.inputTokens)}</dd>
+    <dt>Model</dt><dd>${esc(stats.modelSeen || '—')}</dd>
   `;
 
-  const mean = (b) => (b.episodes ? (b.total / b.episodes).toFixed(0) : '—');
-  const damage = boards.jev.episodes && boards.versus.episodes
-    ? (boards.jev.total / boards.jev.episodes) - (boards.versus.total / boards.versus.episodes)
-    : null;
+  const survived = stats.shoves ? (stats.recoveries / stats.shoves) * 100 : null;
+  const inFlightShove = stats.unresolvedShove;
 
-  $('head2head').innerHTML = `
-    <div class="stathead">Jev alone</div>
-    <dt>Best</dt><dd class="jev">${boards.jev.best || '—'}</dd>
-    <dt>Mean over ${boards.jev.episodes}</dt><dd class="jev">${mean(boards.jev)}</dd>
-
-    <div class="stathead">You alone</div>
-    <dt>Best</dt><dd class="you">${boards.human.best || '—'}</dd>
-    <dt>Mean over ${boards.human.episodes}</dt><dd class="you">${mean(boards.human)}</dd>
-
-    <div class="stathead">Contested</div>
-    <dt>Jev vs you, best</dt><dd class="jev">${boards.versus.best || '—'}</dd>
-    <dt>Jev vs you, mean</dt><dd class="jev">${mean(boards.versus)}</dd>
-    <dt>Steps you cost it</dt><dd class="${damage !== null && damage > 0 ? 'you' : ''}">${damage === null ? '—' : damage.toFixed(0)}</dd>
+  $('shoveStats').innerHTML = `
+    <dt>Shoves delivered</dt><dd class="you">${stats.shoves}</dd>
+    <dt>Recovered</dt><dd class="${stats.recoveries ? 'good' : ''}">${stats.recoveries}</dd>
+    <dt>Knocked it over</dt><dd class="${stats.knockdowns ? 'you' : ''}">${stats.knockdowns}</dd>
+    <dt>Shoves survived</dt><dd class="${survived !== null && survived >= 50 ? 'good' : 'warn'}">${survived === null ? '—' : `${survived.toFixed(0)}%`}</dd>
+    ${inFlightShove ? '<dt>Latest shove</dt><dd class="warn">deciding…</dd>' : ''}
   `;
 
-  $('h2hIntro').innerHTML =
-    boards.versus.episodes && boards.jev.episodes
-      ? `Playing against you, Jev loses about <strong>${Math.max(0, damage ?? 0).toFixed(0)} steps</strong> per episode on average.`
-      : 'Play a few episodes in each mode and the comparison fills in.';
+  $('shoveIntro').innerHTML = stats.shoves
+    ? `You have shoved the cart <strong>${stats.shoves}</strong> time${stats.shoves === 1 ? '' : 's'}. ` +
+      `Jev held on for <strong>${stats.recoveries}</strong> and went down <strong>${stats.knockdowns}</strong>.`
+    : 'Click either side of the cart to knock it off balance, and see whether Jev can recover. ' +
+      'A shove counts as survived if the episode lasts another half second.';
 }
 
 /* ----------------------------------------------------------- state preview -- */
-
-function currentHumanForce() {
-  return settings.controlMode === 'jev' ? null : humanForce();
-}
-
-function statePreviewText() {
-  return JSON.stringify(buildState(state, settings.representation, { humanForce: currentHumanForce() }), null, 2);
-}
 
 let lastPreview = 0;
 function renderPreview(now = 0) {
   if (now - lastPreview < 100) return;
   lastPreview = now;
-  $('statePreview').textContent = statePreviewText();
+  $('statePreview').textContent = JSON.stringify(buildState(state, settings.representation), null, 2);
 
   const d = describeState(state);
   $('readout').innerHTML = [
@@ -410,44 +367,67 @@ function startEpisode() {
   jevAction = 1;
   acc = 0;
   lastDecisionAt = 0;
-  episodeMode = settings.controlMode;
-  log('episode', `${MODES[episodeMode].label} — episode ${boards[episodeMode].episodes + 1} started`);
+  pendingShove = 0;
+  stats.unresolvedShove = false;
+  log('episode', `episode ${stats.episodes + 1} started`);
 }
 
 function endEpisode(reason) {
-  const b = boards[episodeMode];
-  b.episodes++;
-  b.total += score;
-  if (score > b.best) b.best = score;
+  stats.episodes++;
+  stats.total += score;
+  if (score > stats.best) stats.best = score;
+  if (stats.unresolvedShove) stats.knockdowns++;
+  stats.unresolvedShove = false;
 
   const cap = score >= MAX_STEPS ? ' (hit the 500-step cap)' : '';
-  log('episode', `${MODES[episodeMode].label} episode ended after <span class="v-num">${score}</span> steps — ${reason}${cap}`);
+  const blamed = stats.knockdowns && reason === 'fell' ? '' : '';
+  log('episode', `episode ${stats.episodes} ended after <span class="v-num">${score}</span> steps — ${reason}${cap}${blamed}`);
   trail = [];
 
   if (settings.autorestart && running) {
-    setTimeout(() => { if (running) startEpisode(); }, 400);
+    setTimeout(() => { if (running) startEpisode(); }, 600);
   } else {
     stop();
   }
 }
 
+/* ------------------------------------------------------------------- shove -- */
+
+/**
+ * Deliver one impulse. Queued rather than applied immediately so that it lands
+ * on exactly one physics step, whatever the sim speed is doing.
+ */
+function shove(dir, screenX, screenY) {
+  if (!running) return;
+  pendingShove = dir * settings.shoveN;
+
+  const dv = settings.shoveN / TOTAL_MASS_KG;
+  stats.shoves++;
+  stats.lastShoveAt = score;
+  stats.unresolvedShove = true;
+  shoveFx = { x: screenX, y: screenY, dir, t: performance.now() };
+
+  log(
+    'warn',
+    `${dir > 0 ? '→' : '←'} shove ${settings.shoveN} N·s at step ${score}  ` +
+      `<span class="v-dim">cart gains ${dv.toFixed(2)} m/s instantly</span>`,
+  );
+}
+
 /* ---------------------------------------------------------------- decisions -- */
 
-function setStatus(s) { $('statusDot').dataset.state = s; }
+function setStatus(v) { $('statusDot').dataset.state = v; }
 
 async function decide() {
   inFlight = true;
   setStatus('thinking');
 
   const snapshot = { ...state };
-  const snapshotHuman = humanForce();
 
   try {
     const out = await askJev({
       apiKey: $('apiKey').value.trim(),
-      state: buildState(snapshot, settings.representation, {
-        humanForce: settings.controlMode === 'jev' ? null : snapshotHuman,
-      }),
+      state: buildState(snapshot, settings.representation),
       questions: QUESTIONS,
       model: $('model').value.trim() || DEFAULT_MODEL,
     });
@@ -463,25 +443,22 @@ async function decide() {
     stats.modelSeen = out.model;
 
     const a = out.answers;
-    const dir = decision.action === 1 ? 1 : -1;
-    const vs = settings.controlMode === 'versus' && snapshotHuman !== 0
-      ? ` <span class="v-dim">(you were ${snapshotHuman > 0 ? 'right' : 'left'})</span>`
-      : '';
-
     log(
       'decision',
-      `#${stats.decisions} Jev → ${dirSpan(dir, decision.action === 1 ? 'RIGHT' : 'LEFT')}` +
+      `#${stats.decisions} Jev → ${dirSpan(decision.action === 1 ? 1 : -1, decision.action === 1 ? 'RIGHT' : 'LEFT')}` +
         ` <span class="k">p(right)</span>=<span class="v-num">${(a.push_right?.noul ?? NaN).toFixed(2)}</span>` +
         ` <span class="k">instab</span>=<span class="v-num">${(a.instability?.score ?? NaN).toFixed(1)}</span>` +
-        ` <span class="v-dim">${out.latencyMs}ms in=${out.usage.input_tokens ?? 0}</span>${vs}`,
+        ` <span class="v-dim">${out.latencyMs}ms in=${out.usage.input_tokens ?? 0}</span>`,
     );
 
-    if (settings.verbose) log('raw', esc(JSON.stringify({ state: buildState(snapshot, settings.representation, { humanForce: snapshotHuman }), answers: a }, null, 1)));
+    if (settings.verbose) {
+      log('raw', esc(JSON.stringify({ state: buildState(snapshot, settings.representation), answers: a }, null, 1)));
+    }
   } catch (err) {
     stop();
     if (err instanceof BrowserBlockedError) {
       log('error', `<b>Could not reach the API.</b> ${esc(err.message)}`);
-      log('warn', 'Start the app with <code>node tools/dev-proxy.mjs</code> and open <code>http://localhost:8787</code>.');
+      log('warn', 'Start the app with <code>npx wrangler pages dev .</code> or <code>node tools/dev-proxy.mjs</code>.');
     } else if (err instanceof ApiError) {
       log('error', `<b>HTTP ${err.status}</b> — ${esc(err.message)}`);
       if (err.status === 401) log('warn', 'That usually means the API key is wrong or expired.');
@@ -503,34 +480,43 @@ function frame(now) {
   lastFrameAt = now;
 
   if (running) {
-    // ---- the whole versus mechanic, in two lines --------------------------
-    const hf = settings.controlMode === 'jev' ? 0 : humanForce();
-    const jf = jevForce();
-    netForce = jf + hf;
-    // ----------------------------------------------------------------------
+    netForce = settings.jevForceN * (jevAction === 1 ? 1 : -1);
 
     acc += dt * settings.simSpeed;
     while (acc >= TAU) {
       acc -= TAU;
-      const r = stepForce(state, netForce);
+
+      // an impulse becomes one very strong push over one step
+      let f = netForce;
+      if (pendingShove !== 0) {
+        f += pendingShove / TAU;
+        pendingShove = 0;
+      }
+
+      const r = stepForce(state, f);
       state = r.state;
       score += r.reward;
+
+      if (stats.unresolvedShove && score - stats.lastShoveAt >= RECOVERY_STEPS) {
+        stats.unresolvedShove = false;
+        stats.recoveries++;
+        log('episode', `<span class="v-num">▲ recovered</span> from the shove at step ${stats.lastShoveAt}`);
+      }
+
       if (r.terminated) { endEpisode('pole fell or cart left the track'); break; }
       if (score >= MAX_STEPS) { endEpisode('clean run'); break; }
     }
 
-    if (settings.controlMode !== 'human') {
-      const interval = 1000 / settings.rate;
-      if (inFlight) {
-        if (now - lastDecisionAt >= interval) stats.skipped++;
-      } else if (now - lastDecisionAt >= interval) {
-        lastDecisionAt = now;
-        decide();
-      }
+    const interval = 1000 / settings.rate;
+    if (inFlight) {
+      if (now - lastDecisionAt >= interval) stats.skipped++;
+    } else if (now - lastDecisionAt >= interval) {
+      lastDecisionAt = now;
+      decide();
     }
   }
 
-  render();
+  render(now);
   renderPreview(now);
   renderStats(now);
   requestAnimationFrame(frame);
@@ -540,17 +526,13 @@ function frame(now) {
 
 function start() {
   if (running) return;
-  if (settings.controlMode !== 'human' && !$('apiKey').value.trim()) {
-    log('warn', 'Enter your TypeSafe API key first.');
-    return;
-  }
+  if (!$('apiKey').value.trim()) { log('warn', 'Enter your TypeSafe API key first.'); return; }
   running = true;
   setStatus('running');
   $('btnStart').textContent = 'Pause';
   $('btnStart').dataset.running = 'true';
   startEpisode();
-  const extra = settings.controlMode === 'human' ? ' (no API calls)' : ` at ${settings.rate} decisions/sec`;
-  log('episode', `running — sim speed ${settings.simSpeed}×${extra}`);
+  log('episode', `running — ${settings.rate} decisions/sec, sim speed ${settings.simSpeed}×`);
 }
 
 function stop() {
@@ -559,18 +541,6 @@ function stop() {
   setStatus('idle');
   $('btnStart').textContent = 'Start';
   $('btnStart').dataset.running = 'false';
-}
-
-function setMode(id) {
-  if (!MODES[id] || settings.controlMode === id) return;
-  const wasRunning = running;
-  if (wasRunning) stop(); // never mix modes inside one episode's score
-  settings.controlMode = id;
-  persist();
-  $('modeHint').textContent = MODES[id].hint;
-  [...$('modeSeg').children].forEach((c) => c.setAttribute('aria-selected', String(c.dataset.mode === id)));
-  log('episode', `mode → ${MODES[id].label}${wasRunning ? ' (stopped, scores stay separate)' : ''}`);
-  if (wasRunning) log('warn', 'press Start to begin a fresh episode');
 }
 
 /* ------------------------------------------------------------------ wiring -- */
@@ -588,19 +558,6 @@ function buildSegmented(container, options, current, onPick) {
   }
 }
 
-function holdButton(el, which) {
-  const on = (e) => { e.preventDefault(); human[which] = true; el.classList.add('active'); };
-  const off = () => { human[which] = false; el.classList.remove('active'); };
-  el.addEventListener('pointerdown', on);
-  el.addEventListener('pointerup', off);
-  el.addEventListener('pointerleave', off);
-  el.addEventListener('pointercancel', off);
-  // keyboard access on the button itself
-  el.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') on(e); });
-  el.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') off(); });
-  el.addEventListener('blur', off);
-}
-
 function wire() {
   $('apiKey').value = settings.apiKey;
   $('model').value = settings.model;
@@ -608,6 +565,10 @@ function wire() {
   $('rateOut').textContent = settings.rate;
   $('speed').value = settings.simSpeed;
   $('speedOut').textContent = `${settings.simSpeed}×`;
+  $('shove').value = settings.shoveN;
+  $('shoveOut').textContent = `${settings.shoveN} N·s`;
+  $('jevForce').value = settings.jevForceN;
+  $('jevForceOut').textContent = `${settings.jevForceN} N`;
   $('autorestart').checked = settings.autorestart;
   $('verbose').checked = settings.verbose;
 
@@ -615,30 +576,19 @@ function wire() {
   $('model').oninput = (e) => { settings.model = e.target.value.trim(); persist(); };
   $('rate').oninput = (e) => { settings.rate = +e.target.value; $('rateOut').textContent = settings.rate; persist(); };
   $('speed').oninput = (e) => { settings.simSpeed = +e.target.value; $('speedOut').textContent = `${settings.simSpeed}×`; persist(); };
-
-  $('jevForce').value = settings.jevForceN;
-  $('jevForceOut').textContent = `${settings.jevForceN} N`;
-  $('humanForce').value = settings.humanForceN;
-  $('humanForceOut').textContent = `${settings.humanForceN} N`;
-
-  $('jevForce').oninput = (e) => {
-    settings.jevForceN = +e.target.value;
-    $('jevForceOut').textContent = `${settings.jevForceN} N`;
-    persist();
-  };
-  $('humanForce').oninput = (e) => {
-    settings.humanForceN = +e.target.value;
-    $('humanForceOut').textContent = `${settings.humanForceN} N`;
-    persist();
-  };
+  $('shove').oninput = (e) => { settings.shoveN = +e.target.value; $('shoveOut').textContent = `${settings.shoveN} N·s`; persist(); };
+  $('jevForce').oninput = (e) => { settings.jevForceN = +e.target.value; $('jevForceOut').textContent = `${settings.jevForceN} N`; persist(); };
   $('autorestart').onchange = (e) => { settings.autorestart = e.target.checked; persist(); };
   $('verbose').onchange = (e) => { settings.verbose = e.target.checked; persist(); };
 
   $('btnStart').onclick = () => (running ? stop() : start());
   $('btnReset').onclick = () => {
     stop();
-    for (const k of Object.keys(boards)) Object.assign(boards[k], { episodes: 0, total: 0, best: 0 });
-    Object.assign(stats, { decisions: 0, skipped: 0, inputTokens: 0, outputTokens: 0, latencySum: 0, lastLatency: 0 });
+    Object.assign(stats, {
+      episodes: 0, best: 0, total: 0, shoves: 0, recoveries: 0, knockdowns: 0,
+      decisions: 0, skipped: 0, inputTokens: 0, outputTokens: 0, latencySum: 0, lastLatency: 0,
+      unresolvedShove: false,
+    });
     startEpisode();
     log('episode', 'scoreboards reset');
   };
@@ -655,13 +605,9 @@ function wire() {
       });
       log('episode', `connection OK — model <b>${esc(out.model)}</b>, ${out.latencyMs} ms, ${out.usage.input_tokens} input tokens`);
     } catch (err) {
-      if (err instanceof BrowserBlockedError) {
-        log('error', `<b>Could not reach the API.</b> ${esc(err.message)}`);
-      } else if (err instanceof ApiError) {
-        log('error', `HTTP ${err.status} — ${esc(err.message)}`);
-      } else {
-        log('error', esc(err?.message ?? String(err)));
-      }
+      if (err instanceof BrowserBlockedError) log('error', `<b>Could not reach the API.</b> ${esc(err.message)}`);
+      else if (err instanceof ApiError) log('error', `HTTP ${err.status} — ${esc(err.message)}`);
+      else log('error', esc(err?.message ?? String(err)));
     } finally {
       $('btnTest').disabled = false;
     }
@@ -681,37 +627,30 @@ function wire() {
   });
   $('policyHint').textContent = POLICIES[settings.policy].hint;
 
-  buildSegmented($('modeSeg'), MODES, settings.controlMode, setMode);
-  $('modeHint').textContent = MODES[settings.controlMode].hint;
+  // --- the whole interaction: click a side of the cart to shove it ----------
+  const HIT = 0.25; // metres around the cart that still counts as a direct hit
+  const shoveHere = (clientX, clientY) => {
+    const worldX = pxToWorld(clientX);
+    const dx = worldX - state.x;
+    const dir = Math.abs(dx) <= HIT ? (Math.sign(dx) || 1) : Math.sign(dx);
+    const rect = canvas.getBoundingClientRect();
+    shove(dir, clientX - rect.left, clientY - rect.top);
+  };
 
-  holdButton($('pushLeft'), 'left');
-  holdButton($('pushRight'), 'right');
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    shoveHere(e.clientX, e.clientY);
+  });
 
-  // keyboard: arrows or A/D, anywhere on the page
-  const KEYMAP = { ArrowLeft: 'left', ArrowRight: 'right', a: 'left', A: 'left', d: 'right', D: 'right' };
   window.addEventListener('keydown', (e) => {
-    const k = KEYMAP[e.key];
-    if (!k) return;
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const el = e.target;
     if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
     e.preventDefault();
-    human[k] = true;
-    $(k === 'left' ? 'pushLeft' : 'pushRight').classList.add('active');
+    const dir = e.key === 'ArrowRight' ? 1 : -1;
+    const rect = canvas.getBoundingClientRect();
+    shove(dir, rect.width / 2 + dir * 40, rect.height * 0.55);
   });
-  window.addEventListener('keyup', (e) => {
-    const k = KEYMAP[e.key];
-    if (!k) return;
-    human[k] = false;
-    $(k === 'left' ? 'pushLeft' : 'pushRight').classList.remove('active');
-  });
-  // never leave a key stuck down when focus or visibility changes
-  const releaseAll = () => {
-    human.left = human.right = false;
-    $('pushLeft').classList.remove('active');
-    $('pushRight').classList.remove('active');
-  };
-  window.addEventListener('blur', releaseAll);
-  document.addEventListener('visibilitychange', () => { releaseAll(); lastFrameAt = 0; });
 
   $('questionPreview').textContent = JSON.stringify(QUESTIONS, null, 2);
   $('questionCost').textContent =
@@ -719,6 +658,7 @@ function wire() {
     `so this is ~91% of the per-frame cost — shortening it is the cheapest optimisation available.`;
 
   window.addEventListener('resize', fitCanvas);
+  document.addEventListener('visibilitychange', () => { lastFrameAt = 0; });
 }
 
 /* -------------------------------------------------------------------- boot -- */
@@ -728,5 +668,4 @@ wire();
 startEpisode();
 render();
 requestAnimationFrame(frame);
-log('raw', 'ready. Pick a mode, set your API key and proxy URL, then press Start.');
-log('raw', 'tip: switch to “You alone” to get a free personal baseline before paying for any API calls.');
+log('raw', 'ready. Enter your TypeSafe API key, press Start, then click either side of the cart.');
