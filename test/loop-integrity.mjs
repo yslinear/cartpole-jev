@@ -46,6 +46,27 @@ const html = readFileSync(new URL('public/index.html', ROOT), 'utf8');
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 
 const elements = new Map();
+
+/**
+ * Record every fillText so the HUD can be checked for collisions.
+ *
+ * Two lines drawn at the same y overlap and become unreadable, and nothing about
+ * the code makes that obvious -- it happened once when "synced to ..." was put at
+ * y=84 while the Jev line was already at y=88. Any future line inserted with a
+ * hard-coded y will trip this.
+ */
+const textCalls = [];
+function recordingContext() {
+  return anyObj({
+    // clearRect starts a frame, so reset here: only the latest frame's HUD is
+    // on screen. Accumulating across frames made every line look like a
+    // collision with its own previous value.
+    clearRect() { textCalls.length = 0; },
+    fillText(text, x, y) { textCalls.push({ text: String(text), x, y }); },
+    measureText: () => ({ width: 100 }),
+  });
+}
+
 function makeEl(id) {
   return anyObj({
     id, value: '', textContent: '', innerHTML: '', checked: false,
@@ -57,7 +78,7 @@ function makeEl(id) {
     addEventListener() {}, removeEventListener() {}, remove() {},
     setAttribute() {}, getAttribute: () => null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 900, height: 420, right: 900, bottom: 420 }),
-    getContext: () => anyObj(),
+    getContext: () => recordingContext(),
     focus() {}, firstElementChild: null, scrollTop: 0, scrollHeight: 0,
   });
 }
@@ -144,6 +165,17 @@ const dupStart = startedNums.filter((n, i) => startedNums.indexOf(n) !== i);
 const statsHtml = elements.get('stats').innerHTML ?? '';
 const statsEpisodes = Number((statsHtml.match(/Episodes<\/dt><dd>(\d+)<\/dd>/) ?? [])[1] ?? NaN);
 
+// HUD collision check on the last frame only: left-aligned lines in the same
+// column must not share a y. Two different strings at one y cannot both be read.
+const frameText = textCalls.slice();
+const hudLines = frameText.filter((c) => c.x === 14).map((c) => ({ y: c.y, text: c.text }));
+const byY = new Map();
+for (const l of hudLines) {
+  if (!byY.has(l.y)) byY.set(l.y, []);
+  byY.get(l.y).push(l.text);
+}
+const collisions = [...byY.entries()].filter(([, texts]) => new Set(texts).size > 1);
+
 console.log(`\n  ran for .................... ${RUN_MS} ms`);
 console.log(`  animation frames ........... ${rafCount}`);
 console.log(`  stubbed API calls .......... ${apiCalls}`);
@@ -151,6 +183,7 @@ console.log(`  "episode N started" lines ... ${started.length}`);
 console.log(`  "ended" lines ............... ${ended.length}`);
 console.log(`  episode number in stats ..... ${statsEpisodes}`);
 console.log(`  duplicate "started" numbers . ${dupStart.length}`);
+console.log(`  HUD lines on the last frame .. ${byY.size} rows`);
 
 // A runaway produces endEpisode() calls every frame. At ~60 fps over 4 s that
 // is ~240 of them; a healthy loop produces a handful of real episodes.
@@ -171,6 +204,9 @@ if (Number.isFinite(statsEpisodes) && statsEpisodes !== ended.length) {
 if (apiCalls === 0) {
   failures.push('the loop never called the API, so this test proved nothing');
 }
+for (const [y, texts] of collisions) {
+  failures.push(`HUD lines overlap at y=${y}: ${texts.map((t) => JSON.stringify(t.slice(0, 34))).join(' and ')}`);
+}
 
 if (failures.length) {
   console.error('\n  FAIL');
@@ -179,5 +215,6 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log('\n  ✅ one start per episode, one end per episode, none per frame\n');
+console.log('\n  ✅ one start per episode, one end per episode, none per frame');
+console.log('  ✅ no HUD lines share a y coordinate\n');
 process.exit(0);

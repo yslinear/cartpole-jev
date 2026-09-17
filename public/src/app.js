@@ -221,18 +221,66 @@ function render(now = 0) {
   const cartW = px(0.5);
   const cartH = 22;
 
-  // failure-angle guides
-  for (const dir of [-1, 1]) {
-    const a = -Math.PI / 2 + dir * THETA_THRESHOLD;
-    ctx.beginPath();
-    ctx.moveTo(pivotX, groundY - cartH);
-    ctx.lineTo(pivotX + Math.cos(a) * poleLenPx * 1.35, groundY - cartH + Math.sin(a) * poleLenPx * 1.35);
-    ctx.strokeStyle = 'rgba(239,107,107,.20)';
-    ctx.setLineDash([3, 5]);
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.setLineDash([]);
+  // ---- angle protractor -------------------------------------------------
+  // The pole spends almost all its time within a couple of degrees of upright,
+  // so a bare stick against two failure lines tells you nothing: 0.5 degrees and
+  // 3 degrees look identical. This gives it a scale -- a vertical reference, tick
+  // marks every 3 degrees, and an arc from vertical to the pole with the number
+  // on it, coloured by how close the pole is to the limit.
+  const pivotY = groundY - cartH;
+  const angleDeg = toDegrees(state.theta);
+  const R = Math.max(56, Math.min(96, poleLenPx * 0.46));
+  const frac = Math.min(1, Math.abs(angleDeg) / toDegrees(THETA_THRESHOLD));
+  const arcColour = frac > 0.75 ? '#ef6b6b' : frac > 0.45 ? '#f0a04b' : '#45d6c3';
+
+  // upright reference
+  ctx.beginPath();
+  ctx.moveTo(pivotX, pivotY);
+  ctx.lineTo(pivotX, pivotY - R - 24);
+  ctx.strokeStyle = 'rgba(143,163,186,.30)';
+  ctx.setLineDash([2, 6]);
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // tick marks, the last one being the failure angle
+  const limitDeg = toDegrees(THETA_THRESHOLD);
+  for (const deg of [3, 6, 9, limitDeg]) {
+    const isLimit = deg === limitDeg;
+    for (const dir of [-1, 1]) {
+      const a = -Math.PI / 2 + dir * ((deg * Math.PI) / 180);
+      const inner = R + 6;
+      const outer = R + (isLimit ? 15 : 9);
+      ctx.beginPath();
+      ctx.moveTo(pivotX + Math.cos(a) * inner, pivotY + Math.sin(a) * inner);
+      ctx.lineTo(pivotX + Math.cos(a) * outer, pivotY + Math.sin(a) * outer);
+      ctx.strokeStyle = isLimit ? 'rgba(239,107,107,.55)' : 'rgba(143,163,186,.28)';
+      ctx.lineWidth = isLimit ? 2 : 1;
+      ctx.stroke();
+    }
   }
+
+  // the arc from upright to wherever the pole actually is
+  ctx.beginPath();
+  ctx.arc(pivotX, pivotY, R, -Math.PI / 2, -Math.PI / 2 + state.theta, state.theta < 0);
+  ctx.strokeStyle = arcColour;
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'butt';
+  ctx.stroke();
+
+  // the number, halfway round that arc
+  const labelA = -Math.PI / 2 + state.theta / 2;
+  ctx.font = '600 12px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = arcColour;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(
+    `${angleDeg >= 0 ? '+' : '−'}${Math.abs(angleDeg).toFixed(1)}°`,
+    pivotX + Math.cos(labelA) * (R + 26),
+    pivotY + Math.sin(labelA) * (R + 26),
+  );
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
 
   // pole-tip trail
   if (trail.length > 1) {
@@ -302,29 +350,52 @@ function render(now = 0) {
   trail.push({ x: tipX, y: tipY });
   if (trail.length > 110) trail.shift();
 
-  // HUD
+  // HUD. Every line advances `line`; hard-coded y values collided once, which
+  // is how "synced to ..." ended up drawn on top of the Jev line.
+  let line = 24;
+  const advance = () => { line += 20; };
+
   ctx.font = '500 13px ui-monospace, Menlo, monospace';
   ctx.fillStyle = '#8593a6';
-  ctx.fillText(`score ${score}`, 14, 24);
-  ctx.fillText(`step ${score}/500`, 14, 44);
-  const held = Math.round(1000 / settings.rate);
-  ctx.fillText(`push held ${held} ms  (${(held / (TAU * 1000)).toFixed(0)} physics steps)`, 14, 64);
+  ctx.fillText(`score ${score}`, 14, line); advance();
+  ctx.fillText(`step ${score}/${MAX_STEPS}`, 14, line); advance();
+
+  // What the controller actually gets, not what the slider asked for. The
+  // requested rate is a wish; the API's latency decides the truth, and this is
+  // the number that decides whether the pole can be held at all.
+  const simNow = effectiveSimSpeed();
+  const simMsPerDecision = (stats.lastLatency || 1000 / settings.rate) * simNow;
+  const stepsPerDecision = simMsPerDecision / (TAU * 1000);
+  const controllable = stepsPerDecision <= 4;
+  ctx.fillStyle = controllable ? '#8593a6' : '#f0a04b';
+  ctx.fillText(
+    `each decision covers ${stepsPerDecision.toFixed(1)} physics steps (${simMsPerDecision.toFixed(0)} ms of sim)`,
+    14, line,
+  );
+  advance();
+
   if (settings.syncSpeed && stats.lastLatency) {
-    const sim = effectiveSimSpeed();
-    const covered = (stats.lastLatency / 1000) * sim * 1000;
     ctx.fillStyle = '#45d6c3';
+    ctx.fillText(`sim ${simNow.toFixed(3)}x, slowed to match the ${stats.lastLatency} ms call`, 14, line);
+    advance();
+  } else {
+    ctx.fillStyle = controllable ? '#5d6b7e' : '#f0a04b';
     ctx.fillText(
-      `synced to ${stats.lastLatency}ms: sim ${sim.toFixed(3)}x, each decision covers ${covered.toFixed(0)}ms of sim`,
-      14, 84,
+      controllable
+        ? `real time at ${settings.simSpeed}x`
+        : `real time is ${(1 / simNow).toFixed(1)}x too fast to control — enable the latency match`,
+      14, line,
     );
+    advance();
   }
 
   ctx.fillStyle = '#45d6c3';
-  ctx.fillText(`Jev  ${jf > 0 ? '→' : '←'} ${jf > 0 ? '+' : '−'}${Math.abs(jf)} N  →  ${accelOf(jf).toFixed(1)} m/s²`, 14, 88);
+  ctx.fillText(`Jev  ${jf > 0 ? '→' : '←'} ${jf > 0 ? '+' : '−'}${Math.abs(jf)} N  →  ${accelOf(jf).toFixed(1)} m/s²`, 14, line);
+  advance();
 
   if (inFlight) {
     ctx.fillStyle = '#f0a04b';
-    ctx.fillText('waiting for Jev…', 14, 108);
+    ctx.fillText('waiting for Jev…', 14, line);
   }
 
   // click hint, only until the first shove
