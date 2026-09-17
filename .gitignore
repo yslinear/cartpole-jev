@@ -17,3 +17,6 @@ worker/node_modules/
 
 # scratch output from the Firecrawl/CLI tooling
 .firecrawl/
+
+# wrangler local dev cache
+.wrangler/

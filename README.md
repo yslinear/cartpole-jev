@@ -20,13 +20,23 @@ Three modes:
 
 ## Quick start
 
+Two ways to run it locally. Neither needs a build step or any dependency.
+
+**With wrangler** — the real Workers runtime, byte-identical to production:
+
+```bash
+npx wrangler pages dev . --port 8787
+```
+
+**Without wrangler** — a dependency-free Node server that does the same thing:
+
 ```bash
 node tools/dev-proxy.mjs
 ```
 
-Open <http://localhost:8787>, paste your TypeSafe API key, press **Start**. That is the whole
-setup — there is no proxy URL to configure, no dependencies, no build step. Node 18+ is all
-you need.
+Either way, open <http://localhost:8787>, paste your TypeSafe API key, press **Start**. There is
+no proxy URL to configure: the page and the API route share one origin, so
+`API_BASE = ''` just works. Node 18+ is all you need.
 
 ---
 
@@ -175,75 +185,81 @@ identical**, so adding the human did not disturb the verified dynamics.
 
 ---
 
-## Why there is no proxy URL in the UI
+## Deployment
 
-There used to be one, and there is a reason it went away.
+### Where it runs
 
-`api.typesafe.ai` answers every browser origin with `400 Disallowed CORS origin` — verified
-against `*.github.io`, `localhost:8080`, `localhost:5173`, `null`, `*` and even
-`console.typesafe.ai`. So a page cannot call it directly.
+| | |
+|---|---|
+| **Live** | <https://cartpole-jev.pages.dev> |
+| **Platform** | Cloudflare Pages + one Pages Function |
+| **Config needed** | none — `API_BASE` is `''`, same origin |
 
-But it does not follow that users should be pasting URLs. `tools/dev-proxy.mjs` serves the
-page **and** the API route from one origin, so the app just calls the same-origin path
-`/v1/systemone` and CORS never enters the picture. Hence `src/config.js`:
+### Why it needs a Function at all
 
-```js
-export const API_BASE = '';   // '' = same origin
+The app asks users for their own API key, and `api.typesafe.ai` refuses to be called from a
+browser. Measured, against every origin I could think of:
+
+```
+Origin: https://cartpole-jev.pages.dev   ->  400 Disallowed CORS origin
+Origin: https://yslinear.dev             ->  400
+Origin: http://localhost:8080            ->  400
+Origin: https://console.typesafe.ai      ->  400   (their own console!)
+Origin: null  |  Origin: *               ->  400
 ```
 
-**Local use needs no configuration at all.** The one case that still needs something is a
-host with no backend, like GitHub Pages — for that, deploy the included Worker, set
-`API_BASE` to its URL, and that is the only line anyone has to touch.
+Two requirements each force a preflight on their own:
 
-```bash
-cd worker && npx wrangler deploy     # prints https://typesafe-cors-proxy.you.workers.dev
-```
+- `Authorization: Bearer …` is not a CORS-safelisted header.
+- `Content-Type: application/json` is not a safelisted value.
 
-The Worker is stateless, hard-codes the upstream host so it cannot become a general open
-relay, and supports `ALLOWED_ORIGINS` and `PROXY_TOKEN` to lock it down.
+The preflight is rejected, so the browser never sends the real request. Even the response that
+*does* come back from a non-browser client omits `Access-Control-Allow-Origin`, so a browser
+would discard it anyway.
 
-### Deploying it
+I tried the ways around it and none work:
 
-There are two supported shapes. Both need a Cloudflare account (free tier is enough); the DNS for
-`yslinear.dev` is already on Cloudflare, so either is a couple of commands.
+| approach | result |
+|---|---|
+| `Content-Type: text/plain` (safelisted, no preflight) | reaches the server, but FastAPI reads the body as a raw **string**: `Input should be a valid dictionary or object` |
+| key in a query parameter | not supported; the API documents the `Authorization` header only |
+| `fetch(..., { mode: 'no-cors' })` | sends, but the response is opaque — unreadable, so useless |
+| a WebSocket (not subject to CORS) | TypeSafe has no WebSocket endpoint |
 
-#### Shape 1 — Cloudflare Pages, same origin (recommended)
+So a same-origin route is required, and `functions/v1/systemone.js` is it: ~40 lines, stateless,
+forwarding the key it is given and never logging it. Pointing `API_BASE` straight at
+`https://api.typesafe.ai` would, if TypeSafe ever allows a browser origin, delete the Function
+entirely — that is the only thing standing between this and a pure static site, and it is their
+configuration to change, not ours.
 
-The page and the API route live on one origin, so `API_BASE` stays `''` and there is nothing to
-configure. This is the same shape as local development.
+### Deploying
 
 ```bash
 npx wrangler login
-npx wrangler pages deploy . --project-name cartpole-jev
+npx wrangler pages deploy . --project-name cartpole-jev --branch main
 ```
 
-`functions/v1/systemone.js` becomes the route `/v1/systemone` on that deployment. Test the
-function before trusting it — that is how the `duplex: 'half'` bug in it was found:
+The site must be served at a **domain root** (`cartpole-jev.pages.dev`, or a subdomain like
+`cartpole.yslinear.dev`). A subpath deployment such as `/cartpole-jev/` would move the route to
+`/cartpole-jev/v1/systemone` and break the relative call.
 
-```bash
-node -e "import('./functions/v1/systemone.js').then(m => console.log(m.onRequestGet()))"
-```
+### Two things worth knowing
 
-Serve it at a domain root (e.g. `cartpole.yslinear.dev`). A subpath deployment such as
-`/cartpole-jev/` would move the route to `/cartpole-jev/v1/systemone` and break the relative call.
+**Everything in the repo root is published.** There is no working ignore mechanism for
+`wrangler pages deploy`: `.assetsignore` exists in wrangler's source but is a Workers Static
+Assets feature, and I verified it changes nothing here — `test/`, `tools/`, `README.md` and
+`package.json` are all served as real files on the live site. Nothing sensitive is among them
+(no key ever enters the repo, `functions/` is intercepted by the runtime, `.git/` is not
+uploaded), but it is untidy. The fix, if you want it, is to move the site into `public/` and
+run `wrangler pages deploy public`.
 
-#### Shape 2 — Cloudflare Worker, keep GitHub Pages
+**Unmatched paths return the app, not a 404.** `/this-path-does-not-exist` answers `200` with
+`index.html`. That is why checking only status codes on this deployment is misleading —
+`/.git/config` also returns `200`, but with the fallback page, not a git config. Read the body.
 
-The Worker below is stateless and hard-codes the upstream host, so it cannot become a general
-open relay.
+### A github.io domain cannot work
 
-```bash
-cd worker && npx wrangler deploy     # prints https://typesafe-cors-proxy.you.workers.dev
-```
-
-Then set that URL in `src/config.js` and rebuild. The call is cross-origin from here on, which is
-fine: the Worker sends the CORS headers. Lock it down with `ALLOWED_ORIGINS` and `PROXY_TOKEN` in
-`worker/wrangler.toml` if you care who uses it.
-
-#### Why GitHub Pages alone can never work
-
-GitHub Pages, and the `*.github.io` domain, are static hosts. Point the app at either one with
-`API_BASE = ''` and the POST lands on the CDN instead of TypeSafe:
+GitHub Pages is a static host, so `API_BASE = ''` sends the POST to the CDN instead of TypeSafe:
 
 ```
 GET     https://yslinear.dev/v1/systemone  ->  404
@@ -251,11 +267,10 @@ OPTIONS https://yslinear.dev/v1/systemone  ->  405
 POST    https://yslinear.dev/v1/systemone  ->  405   Method Not Allowed
 ```
 
-That 405 is readable rather than a network error precisely because the call is same-origin, so no
-CORS is involved — which is the point: same-origin is the right shape, it just needs something
-to answer at that path. Switching to `yslinear.github.io` changes nothing (identical 405), and it
-in fact 301-redirects back to the custom domain, because a user site's custom domain applies to
-every project site beneath it.
+That 405 was readable rather than a network error precisely because the call was same-origin, so
+no CORS was involved — the right shape, with nothing answering at that path. Switching to
+`yslinear.github.io` changed nothing (identical 405) and in fact 301-redirected back to the
+custom domain, because a user site's custom domain applies to every project site beneath it.
 
 ### Security
 
@@ -300,8 +315,8 @@ src/state.js             state -> text, including the opponent sentence
 src/questions.js         the fixed question set + the four policies
 src/typesafe.js          API client with CORS-aware errors
 src/app.js               the loop, the canvas, the force arithmetic, the log
-worker/worker.js         optional Cloudflare Worker, only for static hosts
-tools/dev-proxy.mjs      local dev: static server + API route on one origin
+functions/v1/systemone   the Pages Function that makes /v1/systemone exist
+tools/dev-proxy.mjs      local dev without wrangler: static + API on one origin
 test/compare.mjs         physics regression vs Gymnasium
 test/interval-limit.mjs  the environment's control-theoretic ceiling
 test/token-split.mjs     where the per-frame tokens go
