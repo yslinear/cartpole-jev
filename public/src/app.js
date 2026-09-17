@@ -71,6 +71,9 @@ function persist() {
 const TOTAL_MASS_KG = 1.1;                 // cart 1.0 + pole 0.1, from cartpole.js
 const accelOf = (N) => Math.abs(N) / TOTAL_MASS_KG;
 
+/** Jev's push in newtons, signed: positive is to the right. */
+const signedJevForce = () => (jevAction === 1 ? jevMagnitude : -jevMagnitude);
+
 /**
  * How much simulation time one decision may cover.
  *
@@ -96,6 +99,15 @@ function effectiveSimSpeed() {
 
 let state = resetState();
 let jevAction = 1;
+/**
+ * Newtons for the current decision, unsigned.
+ *
+ * The fixed policies leave this at settings.jevForceN. The graded policy lets
+ * the model set it per step from a Score, which is what turns bang-bang control
+ * into something closer to proportional: a force that shrinks with the error
+ * does far less damage over a long decision interval than a constant one.
+ */
+let jevMagnitude = 4;
 let score = 0;
 let running = false;
 let inFlight = false;
@@ -300,7 +312,7 @@ function render(now = 0) {
   ctx.stroke();
 
   // Jev's push
-  const jf = settings.jevForceN * (jevAction === 1 ? 1 : -1);
+  const jf = signedJevForce();
   forceArrow(pivotX + Math.sign(jf) * (cartW / 2 + 3), groundY - cartH * 0.5, Math.sign(jf), 'rgba(69,214,195,.9)');
 
   // shove ripple, fading
@@ -498,6 +510,7 @@ function primeState() {
   score = 0;
   trail = [];
   jevAction = 1;
+  jevMagnitude = settings.jevForceN;
   acc = 0;
   lastDecisionAt = 0;
   pendingShove = 0;
@@ -581,8 +594,11 @@ async function decide() {
       model: $('model').value.trim() || DEFAULT_MODEL,
     });
 
-    const decision = POLICIES[settings.policy].decide(out.answers, jevAction);
+    const decision = POLICIES[settings.policy].decide(out.answers, jevAction, {
+      baseForceN: settings.jevForceN,
+    });
     jevAction = decision.action;
+    jevMagnitude = decision.force ?? settings.jevForceN;
 
     stats.decisions++;
     stats.inputTokens += out.usage.input_tokens ?? 0;
@@ -595,7 +611,9 @@ async function decide() {
     log(
       'decision',
       `#${stats.decisions} Jev → ${dirSpan(decision.action === 1 ? 1 : -1, decision.action === 1 ? 'RIGHT' : 'LEFT')}` +
+        ` at <span class="v-num">${jevMagnitude.toFixed(1)} N</span>` +
         ` <span class="k">p(right)</span>=<span class="v-num">${(a.push_right?.noul ?? NaN).toFixed(2)}</span>` +
+        (a.push_force ? ` <span class="k">force</span>=<span class="v-num">${(a.push_force.score ?? NaN).toFixed(1)}</span>/3` : '') +
         ` <span class="k">instab</span>=<span class="v-num">${(a.instability?.score ?? NaN).toFixed(1)}</span>` +
         ` <span class="v-dim">${out.latencyMs}ms in=${out.usage.input_tokens ?? 0}</span>`,
     );
@@ -629,7 +647,7 @@ function frame(now) {
   lastFrameAt = now;
 
   if (running && !episodeOver) {
-    netForce = settings.jevForceN * (jevAction === 1 ? 1 : -1);
+    netForce = signedJevForce();
 
     acc += dt * effectiveSimSpeed();
     while (acc >= TAU) {

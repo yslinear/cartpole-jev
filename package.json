@@ -15,7 +15,8 @@
     "test:quality": "node test/control-quality.mjs",
     "test:forcrate": "node test/force-rate.mjs",
     "test:play": "node test/play-headless.mjs",
-    "test:sweep": "node test/sweep.mjs"
+    "test:sweep": "node test/sweep.mjs",
+    "test:grading": "node test/force-grading.mjs"
   },
   "engines": {
     "node": ">=18"

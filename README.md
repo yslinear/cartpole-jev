@@ -245,21 +245,11 @@ identical**, so adding the human did not disturb the verified dynamics.
 
 ---
 
-## Deployment
+## Why an API route exists at all
 
-### Where it runs
-
-| | |
-|---|---|
-| **Live** | <https://cartpole-jev.yslinear.dev> |
-| **Also** | <https://cartpole-jev.pages.dev> |
-| **Platform** | Cloudflare Pages + one Pages Function |
-| **Config needed** | none — `API_BASE` is `''`, same origin |
-
-### Why it needs a Function at all
-
-The app asks users for their own API key, and `api.typesafe.ai` refuses to be called from a
-browser. Measured, against every origin I could think of:
+The app asks you for your own key and sends it straight to TypeSafe. That would be a pure
+static site, except `api.typesafe.ai` refuses to be called from a browser at all. Measured,
+against every origin I could think of:
 
 ```
 Origin: https://cartpole-jev.pages.dev   ->  400 Disallowed CORS origin
@@ -278,7 +268,7 @@ The preflight is rejected, so the browser never sends the real request. Even the
 *does* come back from a non-browser client omits `Access-Control-Allow-Origin`, so a browser
 would discard it anyway.
 
-I tried the ways around it and none work:
+The ways around it do not work either:
 
 | approach | result |
 |---|---|
@@ -287,97 +277,26 @@ I tried the ways around it and none work:
 | `fetch(..., { mode: 'no-cors' })` | sends, but the response is opaque — unreadable, so useless |
 | a WebSocket (not subject to CORS) | TypeSafe has no WebSocket endpoint |
 
-So a same-origin route is required, and `functions/v1/systemone.js` is it: ~40 lines, stateless,
-forwarding the key it is given and never logging it. Pointing `API_BASE` straight at
-`https://api.typesafe.ai` would, if TypeSafe ever allows a browser origin, delete the Function
-entirely — that is the only thing standing between this and a pure static site, and it is their
-configuration to change, not ours.
+So the page needs a route on its own origin, and `functions/v1/systemone.js` is it: ~40 lines,
+stateless, forwarding the key it is given and never logging it. Pointing `API_BASE` straight at
+`https://api.typesafe.ai` would, if TypeSafe ever allows a browser origin, delete that file
+entirely — it is the only thing standing between this and a pure static site, and it is their
+configuration to change, not this project's.
 
-### Deploying
+### Keys, and where they go
 
-```bash
-npx wrangler login
-npx wrangler pages deploy public --project-name cartpole-jev --branch main
-```
+- The key is yours. It lives in that browser's `localStorage`, goes to the API, and is never
+  logged or written to disk — `src/app.js` never touches headers.
+- If `API_BASE` points at someone else's route, your key transits it. That is inherent to any
+  CORS workaround. Running locally, or self-hosting, avoids it.
 
-The site must be served at a **domain root** (`cartpole-jev.yslinear.dev`, or the
-`cartpole-jev.pages.dev` default). A subpath deployment such as `/cartpole-jev/` would move the
-route to `/cartpole-jev/v1/systemone` and break the relative call.
+### One verification gotcha
 
-`wrangler` has no command for custom domains, so that one step uses the API:
-
-```bash
-curl -X POST \
-  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/cartpole-jev/domains" \
-  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"cartpole-jev.yslinear.dev"}'
-```
-
-Then add the DNS record **by hand**. Adding a custom domain through the API does *not* create it,
-even when the zone is in the same account — the domain sits at
-`verification_data.error_message: "CNAME record not set"` until the record exists. (The
-dashboard's own “Add a custom domain” flow does offer to create it for you; the API does not.)
-
-```
-type    CNAME
-name    cartpole-jev
-target  cartpole-jev.pages.dev
-proxied ON      <- required, or the certificate never issues
-```
-
-Verify with DNS rather than trusting the dashboard:
-
-```bash
-dig +short cartpole-jev.yslinear.dev CNAME
-curl -s -o /dev/null -w '%{http_code}\n' https://cartpole-jev.yslinear.dev/
-```
-
-### Two things worth knowing
-
-**Only `public/` is published.** The site lives in `public/` and the deploy uploads that
-directory, so the test harnesses, the dev server and the README are not on the web. Verified
-against the live site: `/test/compare.mjs`, `/tools/dev-proxy.mjs`, `/README.md` and
-`/package.json` all 404, while `/` and `/src/*` serve normally. `functions/` sits at the repo
-root, beside `public/`, and Cloudflare routes it to the Functions runtime rather than serving
-it — confirmed with `wrangler pages dev public`, where `POST /v1/systemone` answered `401`
-(the function's own missing-header check) rather than a 404.
-
-An earlier version deployed `.` and published the whole repository. There is no ignore
-mechanism to fix that with: `.assetsignore` exists in wrangler's source but belongs to Workers
-Static Assets, and I verified it changes nothing for `pages deploy`. Moving the site into a
-directory is the fix.
-
-**Unmatched paths return the app, not a 404.** `/this-path-does-not-exist` answers `200` with
-`index.html`. That is why checking only status codes on this deployment is misleading —
-`/.git/config` also returns `200`, but with the fallback page, not a git config. Read the body.
-A deleted file behaves the same way once the edge cache expires, so check with `?cb=<time>`
-too: a cache hit and a real file look identical otherwise.
-
-### A github.io domain cannot work
-
-GitHub Pages is a static host, so `API_BASE = ''` sends the POST to the CDN instead of TypeSafe:
-
-```
-GET     https://yslinear.dev/v1/systemone  ->  404
-OPTIONS https://yslinear.dev/v1/systemone  ->  405
-POST    https://yslinear.dev/v1/systemone  ->  405   Method Not Allowed
-```
-
-That 405 was readable rather than a network error precisely because the call was same-origin, so
-no CORS was involved — the right shape, with nothing answering at that path. Switching to
-`yslinear.github.io` changed nothing (identical 405) and in fact 301-redirected back to the
-custom domain, because a user site's custom domain applies to every project site beneath it.
-
-### Security
-
-- The API key is the user's own. It lives in that browser's `localStorage`, is sent to the
-  API, and is never logged or written to disk. `src/app.js` never logs headers.
-- If you point `API_BASE` at a proxy you operate, keys transit it. That is inherent to any
-  CORS workaround. Self-host the Worker, or run locally, if that matters.
-- `.gitignore` excludes `.env` files so a key can never be committed by accident.
+Unmatched paths return the app with `200`, not a 404, so a status code alone proves nothing here:
+`/.git/config` answers `200` with `index.html`, not a config file. Read the body, and check a
+deleted file with `?cb=<time>` — a cache hit and a real file look identical otherwise.
 
 ---
-
 ## What the app lets you change
 
 **How Jev sees the state** — three views of the same four numbers: `prose` (full sentences
@@ -397,7 +316,44 @@ policy only decides which answer to consume, at zero extra inference cost:
 
 **Plus** a live decision log with every latency, token count, probability and action; a
 decision-rate slider; and a sim-speed slider, because when network latency makes real-time
-control impossible, slowing the world down is the only honest workaround.
+control impossible, the physics has to be slowed to match.
+
+---
+
+## Can Jev decide how hard to push?
+
+Yes, and it is the difference between bang-bang control and something closer to proportional.
+
+The controller used to pick only a direction and push with a fixed force. `interval-limit.mjs`
+shows why that is fragile: a constant force held across a long decision interval always
+overshoots. So there is now a second question — `push_right` (Noul) gives the direction and
+`push_force` (Score) gives the magnitude, and code multiplies them. Only the force changes;
+everything else is identical.
+
+`test/force-grading.mjs`, real calls, 1 episode per row, base force 4 N:
+
+| decision interval | fixed force | model chooses force |
+|---|---|---|
+| 40 ms (2 steps) | 423, peak 12.1° | **500, balanced**, peak **1.4°** |
+| 100 ms (5 steps) | 367 | 103 |
+| 200 ms (10 steps) | 20 | 93 |
+| 400 ms (20 steps) | 15 | 33 |
+
+At 40 ms the model used **1.0 N on average**, varying over 1.2 N — it taught itself to push
+gently when the pole was nearly upright. The fixed policy cannot do that: it pushes just as
+hard at 0.5° of lean as at 10°, which is precisely what overshoots. The peak angle tells the
+story better than the score: 1.4° versus 12.1° is the difference between controlling the pole
+and chasing it.
+
+It is not a free win. At 100 ms the graded policy did **worse** (103 versus 367), and one
+sample per row is not enough to call that. The plausible reading is that a coarse interval
+needs a decisive push rather than a proportionate one, and a policy that starts gentle is too
+slow to correct. It also costs real money: the extra question adds about 137 input tokens per
+call, which shows up as 230k tokens against 196k over the same 250 decisions.
+
+So: the model can assess force, it clearly helps when decisions are frequent, and it does not
+rescue a coarse interval. Anyone reading this should run their own sweep —
+`node test/force-grading.mjs --episodes 3` — before quoting these numbers.
 
 ---
 
@@ -424,7 +380,8 @@ test/smoke-dom.mjs       imports the real app.js against a stub DOM
 test/sweep.mjs           parameter sweep
 ```
 
-Only `public/` is deployed, so nothing above it is reachable on the live site.
+Only `public/` is the site. Everything else — the harnesses, the dev server, this file — sits
+beside it and is never served.
 
 ## Testing
 
