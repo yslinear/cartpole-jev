@@ -51,6 +51,7 @@ function loadSettings() {
     // the tokens of 10 N at every step. The force slider still goes to 20 N.
     rate: 25,
     simSpeed: 1,
+    syncSpeed: true,           // derive simSpeed from the measured API latency
     shoveN: 1,                 // newton-seconds per click
     jevForceN: 4,              // newtons
     autorestart: true, verbose: false,
@@ -61,14 +62,35 @@ function loadSettings() {
 const settings = loadSettings();
 
 function persist() {
-  const { apiKey, model, representation, policy, rate, simSpeed, shoveN, jevForceN, autorestart, verbose } = settings;
+  const { apiKey, model, representation, policy, rate, simSpeed, syncSpeed, shoveN, jevForceN, autorestart, verbose } = settings;
   localStorage.setItem(LS_KEY, JSON.stringify({
-    apiKey, model, representation, policy, rate, simSpeed, shoveN, jevForceN, autorestart, verbose,
+    apiKey, model, representation, policy, rate, simSpeed, syncSpeed, shoveN, jevForceN, autorestart, verbose,
   }));
 }
 
 const TOTAL_MASS_KG = 1.1;                 // cart 1.0 + pole 0.1, from cartpole.js
 const accelOf = (N) => Math.abs(N) / TOTAL_MASS_KG;
+
+/**
+ * How much simulation time one decision may cover.
+ *
+ * test/interval-limit.mjs: a hand-written controller scores 500 when it can act
+ * every 2 steps (40 ms) and collapses past about 7. Two steps is the target.
+ *
+ * Without this the browser is structurally unable to balance. A call takes ~400
+ * ms, so at sim speed 1 each decision covers ~20 physics steps whatever the
+ * decisions/sec slider says -- a regime where even a perfect controller scores
+ * 10. That slider is a request; the latency decides what actually happens, so
+ * the world is slowed until one decision covers 40 ms of it.
+ */
+const TARGET_SIM_MS_PER_DECISION = 2 * TAU * 1000; // 40 ms
+const MIN_SIM_SPEED = 0.02, MAX_SIM_SPEED = 4;
+
+function effectiveSimSpeed() {
+  if (!settings.syncSpeed || !stats.lastLatency) return settings.simSpeed;
+  const want = TARGET_SIM_MS_PER_DECISION / stats.lastLatency;
+  return Math.min(MAX_SIM_SPEED, Math.max(MIN_SIM_SPEED, want));
+}
 
 /* ------------------------------------------------------------------ state -- */
 
@@ -82,6 +104,19 @@ let lastFrameAt = 0;
 let lastDecisionAt = 0;
 let trail = [];
 let netForce = 0;
+
+/**
+ * Set the moment an episode ends, cleared only by startEpisode().
+ *
+ * Without this the simulation keeps stepping a state that is already out of
+ * bounds, so every subsequent physics step reports terminated again and calls
+ * endEpisode again. The symptoms are nasty and look like a model fault: the
+ * episode counter and the score climb in lockstep, several "episode N started"
+ * lines appear for the same N (each endEpisode queued its own restart timer),
+ * and the pole seems to fall within a second of every restart.
+ */
+let episodeOver = false;
+let restartTimer = null;
 
 /** Newton-seconds queued for the very next physics step. */
 let pendingShove = 0;
@@ -274,6 +309,15 @@ function render(now = 0) {
   ctx.fillText(`step ${score}/500`, 14, 44);
   const held = Math.round(1000 / settings.rate);
   ctx.fillText(`push held ${held} ms  (${(held / (TAU * 1000)).toFixed(0)} physics steps)`, 14, 64);
+  if (settings.syncSpeed && stats.lastLatency) {
+    const sim = effectiveSimSpeed();
+    const covered = (stats.lastLatency / 1000) * sim * 1000;
+    ctx.fillStyle = '#45d6c3';
+    ctx.fillText(
+      `synced to ${stats.lastLatency}ms: sim ${sim.toFixed(3)}x, each decision covers ${covered.toFixed(0)}ms of sim`,
+      14, 84,
+    );
+  }
 
   ctx.fillStyle = '#45d6c3';
   ctx.fillText(`Jev  ${jf > 0 ? '→' : '←'} ${jf > 0 ? '+' : '−'}${Math.abs(jf)} N  →  ${accelOf(jf).toFixed(1)} m/s²`, 14, 88);
@@ -369,7 +413,16 @@ function renderPreview(now = 0) {
 
 /* ----------------------------------------------------------------- episodes -- */
 
-function startEpisode() {
+/**
+ * Reset the simulation without announcing an episode.
+ *
+ * Boot needs a valid state so the canvas has something to draw before anyone
+ * presses Start, but that is not an episode and must not log one. Calling
+ * startEpisode() at boot meant pressing Start logged "episode 1 started" twice.
+ */
+function primeState() {
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  episodeOver = false;
   state = resetState();
   score = 0;
   trail = [];
@@ -378,10 +431,17 @@ function startEpisode() {
   lastDecisionAt = 0;
   pendingShove = 0;
   stats.unresolvedShove = false;
+}
+
+function startEpisode() {
+  primeState();
   log('episode', `episode ${stats.episodes + 1} started`);
 }
 
 function endEpisode(reason) {
+  if (episodeOver) return; // a terminated state keeps reporting terminated
+  episodeOver = true;
+
   stats.episodes++;
   stats.total += score;
   if (score > stats.best) stats.best = score;
@@ -403,7 +463,7 @@ function endEpisode(reason) {
   trail = [];
 
   if (settings.autorestart && running) {
-    setTimeout(() => { if (running) startEpisode(); }, 600);
+    restartTimer = setTimeout(() => { restartTimer = null; if (running) startEpisode(); }, 600);
   } else {
     stop();
   }
@@ -497,10 +557,10 @@ function frame(now) {
   const dt = Math.min((now - (lastFrameAt || now)) / 1000, 0.25);
   lastFrameAt = now;
 
-  if (running) {
+  if (running && !episodeOver) {
     netForce = settings.jevForceN * (jevAction === 1 ? 1 : -1);
 
-    acc += dt * settings.simSpeed;
+    acc += dt * effectiveSimSpeed();
     while (acc >= TAU) {
       acc -= TAU;
 
@@ -560,6 +620,7 @@ function start() {
 function stop() {
   running = false;
   inFlight = false;
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
   setStatus('idle');
   $('btnStart').textContent = 'Start';
   $('btnStart').dataset.running = 'false';
@@ -598,6 +659,16 @@ function wire() {
   $('model').oninput = (e) => { settings.model = e.target.value.trim(); persist(); };
   $('rate').oninput = (e) => { settings.rate = +e.target.value; $('rateOut').textContent = settings.rate; persist(); };
   $('speed').oninput = (e) => { settings.simSpeed = +e.target.value; $('speedOut').textContent = `${settings.simSpeed}×`; persist(); };
+  $('syncSpeed').checked = settings.syncSpeed;
+  $('syncSpeed').onchange = (e) => {
+    settings.syncSpeed = e.target.checked;
+    $('speed').disabled = settings.syncSpeed;
+    persist();
+    log('episode', settings.syncSpeed
+      ? 'sim speed now follows the measured API latency'
+      : `sim speed fixed at ${settings.simSpeed}x — real time, which Jev cannot keep up with`);
+  };
+  $('speed').disabled = settings.syncSpeed;
   $('shove').oninput = (e) => { settings.shoveN = +e.target.value; $('shoveOut').textContent = `${settings.shoveN} N·s`; persist(); };
   $('jevForce').oninput = (e) => { settings.jevForceN = +e.target.value; $('jevForceOut').textContent = `${settings.jevForceN} N`; persist(); };
   $('autorestart').onchange = (e) => { settings.autorestart = e.target.checked; persist(); };
@@ -687,7 +758,7 @@ function wire() {
 
 fitCanvas();
 wire();
-startEpisode();
+primeState(); // draw something, but that is not episode 1
 render();
 requestAnimationFrame(frame);
 log('raw', 'ready. Enter your TypeSafe API key, press Start, then click either side of the cart.');
