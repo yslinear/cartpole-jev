@@ -161,8 +161,27 @@ defaults (4 N, 25 decisions/sec):
 | configuration | score | decisions/episode | tokens/episode | cost |
 |---|---|---|---|---|
 | 10 N, 10/sec *(the old default)* | 42 | 9 | 6,746 | $0.0003 |
-| 4 N, 25/sec *(shipped)* | 500 | 250 | 186,544 | **$0.0078** |
-| 10 N, 50/sec | 500 | 500 | 373,595 | $0.0157 |
+| 4 N, 25/sec *(shipped)*, single episode | 500 | 250 | 186,544 | $0.0078 |
+| 10 N, 50/sec, single episode | 500 | 500 | 373,595 | $0.0157 |
+
+Single episodes flatter any of these, so here is a five-episode sample at the shipped
+defaults, which is the number worth trusting:
+
+```
+  ep 1: score 232 (fell)   peak pole angle 12.1°
+  ep 2: score 500 (cap)    peak pole angle  2.5°
+  ep 3: score 434 (fell)   peak pole angle 12.5°
+  ep 4: score 500 (cap)    peak pole angle  2.4°
+  ep 5: score 500 (cap)    peak pole angle  2.6°
+
+  mean 433   best 500   worst 232   balanced 3/5   mean cost $0.0068 per episode
+```
+
+It balances three times in five and averages 433. That failure rate is deliberate for this
+demo: a controller that never loses cannot be knocked over, and then the shove has nothing to
+prove. Note the shape of the failures — every episode that survived stayed inside 2.6°, every
+one that died ran to the 12° limit. That gap is the signature of a controller that is really
+controlling versus one that has lost the pole.
 
 At 10 decisions/second the old default worked out to about **$1.11/hour, of which $1.01/hour
 was re-sending the same questions** — and it could not balance at any force. Output tokens are
@@ -187,6 +206,7 @@ forced to hold that long.
 | 10 N, 25/sec | 235 | 13.0° |
 | 4 N, 25/sec | **500** | **2.5°** |
 | 10 N, 50/sec | **500** | **2.1°** |
+| 3 N, 50/sec | **500** | **0.8°** |
 
 **At 10 decisions/sec no force balances.** The rows that succeed hold the pole inside ~2.5°;
 the ones that fail all run to the 12° limit, which is the signature of a controller that is
