@@ -148,6 +148,10 @@ elements.get('btnStart').onclick();
 
 const RUN_MS = 4000;
 await new Promise((r) => setTimeout(r, RUN_MS));
+// Let one more render land: renderStats is throttled to 120 ms, so reading
+// immediately after an episode ends can see the previous episode count and look
+// like the stats disagree with the log when they are merely one frame behind.
+await new Promise((r) => setTimeout(r, 250));
 
 /* ----------------------------------------------------------------- verdict -- */
 
@@ -198,8 +202,14 @@ if (ended.length > FRAME_BUDGET) {
 if (started.length > ended.length + 1) {
   failures.push(`${started.length} episodes started but only ${ended.length} ended — restarts are outrunning real episodes`);
 }
-if (Number.isFinite(statsEpisodes) && statsEpisodes !== ended.length) {
-  failures.push(`stats say ${statsEpisodes} episodes but the log shows ${ended.length} — they disagree`);
+// One episode may legitimately still be in flight when we stop looking, and the
+// stats block lags the log by up to one throttled render.
+const statsLag = started.length - ended.length;
+if (Number.isFinite(statsEpisodes) && Math.abs(statsEpisodes - ended.length) > 1) {
+  failures.push(`stats say ${statsEpisodes} episodes but the log shows ${ended.length} — they disagree by more than the one-episode lag a live loop allows`);
+}
+if (statsLag < 0 || statsLag > 1) {
+  failures.push(`${started.length} episodes started but ${ended.length} ended — the counts should differ by at most one (the episode still running)`);
 }
 if (apiCalls === 0) {
   failures.push('the loop never called the API, so this test proved nothing');

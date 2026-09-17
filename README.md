@@ -351,6 +351,20 @@ And wider is not monotonically better. 45° and 60° score worse than 20° and 3
 a pole that far over is harder to bring back, so the extra room costs more than it buys. The
 useful range is roughly 20–30°, which is why the app starts at 20°.
 
+The model gets less out of this than the PD rule does, and the difference is worth stating
+plainly. Same conditions, but Jev deciding through the API instead of a PD rule:
+
+| give-up angle | PD rule | Jev |
+|---|---|---|
+| ±12° | 72 *(peak 12.1°)* | 36 *(peak 12.7°)* |
+| ±20° | 373 *(peak 9.2°)* | 81 *(peak 22.0°)* |
+| ±30° | 428 *(peak 11.3°)* | 55 *(peak 30.5°)* |
+
+Jev does improve, roughly 2.2x. But read the peaks: 12.7°, 22.0°, 30.5° — each one runs to its
+own boundary, exactly the pattern that means a controller is not actually in control. The PD
+rule at ±20° peaking at 9.2° is the opposite: it used the extra room to recover. So a wider give-
+up angle buys Jev more time, not more competence, at this decision interval.
+
 ```bash
 node test/interval-limit.mjs      # the same idea for hold time, no API calls
 ```

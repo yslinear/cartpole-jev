@@ -56,7 +56,11 @@ function makeEl(id) {
     setAttribute() {},
     getAttribute: () => null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 900, height: 420, right: 900, bottom: 420 }),
-    getContext: () => anyObj(),
+    getContext: () => anyObj({
+      // The angle readout sizes a background chip with measureText; without this
+      // the stub returns undefined and importing app.js throws.
+      measureText: (t) => ({ width: String(t).length * 7 }),
+    }),
     focus() {},
     firstElementChild: null,
     scrollTop: 0,
