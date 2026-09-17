@@ -92,6 +92,7 @@ export default {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: auth },
       body: request.body,
+      duplex: 'half', // see functions/v1/systemone.js
     });
 
     const headers = new Headers(cors);

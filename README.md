@@ -202,6 +202,61 @@ cd worker && npx wrangler deploy     # prints https://typesafe-cors-proxy.you.wo
 The Worker is stateless, hard-codes the upstream host so it cannot become a general open
 relay, and supports `ALLOWED_ORIGINS` and `PROXY_TOKEN` to lock it down.
 
+### Deploying it
+
+There are two supported shapes. Both need a Cloudflare account (free tier is enough); the DNS for
+`yslinear.dev` is already on Cloudflare, so either is a couple of commands.
+
+#### Shape 1 — Cloudflare Pages, same origin (recommended)
+
+The page and the API route live on one origin, so `API_BASE` stays `''` and there is nothing to
+configure. This is the same shape as local development.
+
+```bash
+npx wrangler login
+npx wrangler pages deploy . --project-name cartpole-jev
+```
+
+`functions/v1/systemone.js` becomes the route `/v1/systemone` on that deployment. Test the
+function before trusting it — that is how the `duplex: 'half'` bug in it was found:
+
+```bash
+node -e "import('./functions/v1/systemone.js').then(m => console.log(m.onRequestGet()))"
+```
+
+Serve it at a domain root (e.g. `cartpole.yslinear.dev`). A subpath deployment such as
+`/cartpole-jev/` would move the route to `/cartpole-jev/v1/systemone` and break the relative call.
+
+#### Shape 2 — Cloudflare Worker, keep GitHub Pages
+
+The Worker below is stateless and hard-codes the upstream host, so it cannot become a general
+open relay.
+
+```bash
+cd worker && npx wrangler deploy     # prints https://typesafe-cors-proxy.you.workers.dev
+```
+
+Then set that URL in `src/config.js` and rebuild. The call is cross-origin from here on, which is
+fine: the Worker sends the CORS headers. Lock it down with `ALLOWED_ORIGINS` and `PROXY_TOKEN` in
+`worker/wrangler.toml` if you care who uses it.
+
+#### Why GitHub Pages alone can never work
+
+GitHub Pages, and the `*.github.io` domain, are static hosts. Point the app at either one with
+`API_BASE = ''` and the POST lands on the CDN instead of TypeSafe:
+
+```
+GET     https://yslinear.dev/v1/systemone  ->  404
+OPTIONS https://yslinear.dev/v1/systemone  ->  405
+POST    https://yslinear.dev/v1/systemone  ->  405   Method Not Allowed
+```
+
+That 405 is readable rather than a network error precisely because the call is same-origin, so no
+CORS is involved — which is the point: same-origin is the right shape, it just needs something
+to answer at that path. Switching to `yslinear.github.io` changes nothing (identical 405), and it
+in fact 301-redirects back to the custom domain, because a user site's custom domain applies to
+every project site beneath it.
+
 ### Security
 
 - The API key is the user's own. It lives in that browser's `localStorage`, is sent to the
