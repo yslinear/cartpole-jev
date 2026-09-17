@@ -25,7 +25,7 @@ Two ways to run it locally. Neither needs a build step or any dependency.
 **With wrangler** — the real Workers runtime, byte-identical to production:
 
 ```bash
-npx wrangler pages dev . --port 8787
+npx wrangler pages dev public --port 8787
 ```
 
 **Without wrangler** — a dependency-free Node server that does the same thing:
@@ -155,9 +155,49 @@ TypeSafe has **no prompt caching** — the request body is just `state`, `model`
 and all three are re-sent every call. So **91% of every frame is the question set**, not the
 game state.
 
-At 10 decisions/second that is about **$1.11/hour, of which $1.01/hour is re-sending the same
-questions.** Output tokens are free. If you want a cheap real-time loop, **shorten your
-questions, not your state.**
+Cost is then just frame size × decision rate. Measured on real episodes at the shipped
+defaults (4 N, 25 decisions/sec):
+
+| configuration | score | decisions/episode | tokens/episode | cost |
+|---|---|---|---|---|
+| 10 N, 10/sec *(the old default)* | 42 | 9 | 6,746 | $0.0003 |
+| 4 N, 25/sec *(shipped)* | 500 | 250 | 186,544 | **$0.0078** |
+| 10 N, 50/sec | 500 | 500 | 373,595 | $0.0157 |
+
+At 10 decisions/second the old default worked out to about **$1.11/hour, of which $1.01/hour
+was re-sending the same questions** — and it could not balance at any force. Output tokens are
+free. If you want a cheap real-time loop, **shorten your questions, not your state**, and then
+pick the lowest decision rate that still balances.
+
+### The force and the decision rate are not independent
+
+This is the finding that took the longest to see, because the standard CartPole value is a red
+herring. Gymnasium applies an action **every physics step** — 50 times a second. This app holds
+each decision for a whole interval, so at 10 decisions/sec every push lasts 100 ms, and
+`test/interval-limit.mjs` had already shown that even a **perfect** controller collapses when
+forced to hold that long.
+
+`test/force-rate.mjs` sweeps the two against each other with real calls:
+
+| setup | score | peak pole angle |
+|---|---|---|
+| 10 N, 10/sec | 42 | 12.7° |
+| 6 N, 10/sec | 188 | 12.6° |
+| 4 N, 10/sec | 68 | 12.8° |
+| 10 N, 25/sec | 235 | 13.0° |
+| 4 N, 25/sec | **500** | **2.5°** |
+| 10 N, 50/sec | **500** | **2.1°** |
+
+**At 10 decisions/sec no force balances.** The rows that succeed hold the pole inside ~2.5°;
+the ones that fail all run to the 12° limit, which is the signature of a controller that is
+chasing rather than controlling. So when the cart twitches and the pole slowly wanders away,
+the cause is the hold time, not the strength of the push.
+
+Worth saying plainly: `test/control-quality.mjs` checked whether the twitching was bad
+judgement, and it is not. Jev's decisions agree with a hand-written PD controller **92% of the
+time** (and with a naive angle-only rule only 64% — it does account for angular velocity). A
+high rate of direction changes is normal here, because an oscillating pole needs an alternating
+command.
 
 ---
 
@@ -237,7 +277,7 @@ configuration to change, not ours.
 
 ```bash
 npx wrangler login
-npx wrangler pages deploy . --project-name cartpole-jev --branch main
+npx wrangler pages deploy public --project-name cartpole-jev --branch main
 ```
 
 The site must be served at a **domain root** (`cartpole-jev.yslinear.dev`, or the
@@ -274,17 +314,24 @@ curl -s -o /dev/null -w '%{http_code}\n' https://cartpole-jev.yslinear.dev/
 
 ### Two things worth knowing
 
-**Everything in the repo root is published.** There is no working ignore mechanism for
-`wrangler pages deploy`: `.assetsignore` exists in wrangler's source but is a Workers Static
-Assets feature, and I verified it changes nothing here — `test/`, `tools/`, `README.md` and
-`package.json` are all served as real files on the live site. Nothing sensitive is among them
-(no key ever enters the repo, `functions/` is intercepted by the runtime, `.git/` is not
-uploaded), but it is untidy. The fix, if you want it, is to move the site into `public/` and
-run `wrangler pages deploy public`.
+**Only `public/` is published.** The site lives in `public/` and the deploy uploads that
+directory, so the test harnesses, the dev server and the README are not on the web. Verified
+against the live site: `/test/compare.mjs`, `/tools/dev-proxy.mjs`, `/README.md` and
+`/package.json` all 404, while `/` and `/src/*` serve normally. `functions/` sits at the repo
+root, beside `public/`, and Cloudflare routes it to the Functions runtime rather than serving
+it — confirmed with `wrangler pages dev public`, where `POST /v1/systemone` answered `401`
+(the function's own missing-header check) rather than a 404.
+
+An earlier version deployed `.` and published the whole repository. There is no ignore
+mechanism to fix that with: `.assetsignore` exists in wrangler's source but belongs to Workers
+Static Assets, and I verified it changes nothing for `pages deploy`. Moving the site into a
+directory is the fix.
 
 **Unmatched paths return the app, not a 404.** `/this-path-does-not-exist` answers `200` with
 `index.html`. That is why checking only status codes on this deployment is misleading —
 `/.git/config` also returns `200`, but with the fallback page, not a git config. Read the body.
+A deleted file behaves the same way once the edge cache expires, so check with `?cb=<time>`
+too: a cache hit and a real file look identical otherwise.
 
 ### A github.io domain cannot work
 
@@ -337,22 +384,27 @@ control impossible, slowing the world down is the only honest workaround.
 ## Project structure
 
 ```
-index.html               the page
-src/config.js            the one line of configuration you might ever edit
-src/cartpole.js          CartPole-v1 physics, plus the force-based step
-src/state.js             state -> text, including the opponent sentence
-src/questions.js         the fixed question set + the four policies
-src/typesafe.js          API client with CORS-aware errors
-src/app.js               the loop, the canvas, the force arithmetic, the log
+public/index.html        the page
+public/src/config.js     the one line of configuration you might ever edit
+public/src/cartpole.js   CartPole-v1 physics, plus the force-based step
+public/src/state.js      state -> text (three representations)
+public/src/questions.js  the fixed question set + the four policies
+public/src/typesafe.js   API client with CORS-aware errors
+public/src/app.js        the loop, the canvas, the shove, the log
 functions/v1/systemone   the Pages Function that makes /v1/systemone exist
 tools/dev-proxy.mjs      local dev without wrangler: static + API on one origin
+
 test/compare.mjs         physics regression vs Gymnasium
 test/interval-limit.mjs  the environment's control-theoretic ceiling
+test/force-rate.mjs      force vs decision rate, with real calls
+test/control-quality.mjs is the twitching bad judgement, or just dithering?
 test/token-split.mjs     where the per-frame tokens go
 test/play-headless.mjs   headless episodes with fair baselines
-test/versus-headless.mjs counter-strategies against Jev, with and without telling it
+test/smoke-dom.mjs       imports the real app.js against a stub DOM
 test/sweep.mjs           parameter sweep
 ```
+
+Only `public/` is deployed, so nothing above it is reachable on the live site.
 
 ## Testing
 

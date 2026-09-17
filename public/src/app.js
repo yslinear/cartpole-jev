@@ -43,9 +43,16 @@ function loadSettings() {
   return {
     apiKey: '', model: DEFAULT_MODEL,
     representation: 'prose', policy: 'threshold',
-    rate: 10, simSpeed: 1,
+    // Defaults chosen from measurement, not from the standard CartPole value.
+    // Gymnasium applies an action every physics step (50/sec). This app holds
+    // each decision, so at 10/sec a push is held 100 ms and NO force balances:
+    // test/force-rate.mjs measured 42 at 10 N, 188 at 6 N, 68 at 4 N.
+    // 4 N held for 2 steps (25 decisions/sec) scores a clean 500 for about half
+    // the tokens of 10 N at every step. The force slider still goes to 20 N.
+    rate: 25,
+    simSpeed: 1,
     shoveN: 1,                 // newton-seconds per click
-    jevForceN: FORCE_MAG,      // newtons; FORCE_MAG is the standard CartPole value
+    jevForceN: 4,              // newtons
     autorestart: true, verbose: false,
     ...saved,
   };
@@ -86,7 +93,7 @@ const RECOVERY_STEPS = 25; // 0.5 s
 
 const stats = {
   episodes: 0, best: 0, total: 0,
-  shoves: 0, recoveries: 0, knockdowns: 0,
+  shoves: 0, recoveries: 0, knockdowns: 0, lostOnItsOwn: 0,
   lastShoveAt: -Infinity, unresolvedShove: false,
   decisions: 0, skipped: 0,
   inputTokens: 0, outputTokens: 0,
@@ -329,14 +336,16 @@ function renderStats(now = 0) {
   $('shoveStats').innerHTML = `
     <dt>Shoves delivered</dt><dd class="you">${stats.shoves}</dd>
     <dt>Recovered</dt><dd class="${stats.recoveries ? 'good' : ''}">${stats.recoveries}</dd>
-    <dt>Knocked it over</dt><dd class="${stats.knockdowns ? 'you' : ''}">${stats.knockdowns}</dd>
     <dt>Shoves survived</dt><dd class="${survived !== null && survived >= 50 ? 'good' : 'warn'}">${survived === null ? '—' : `${survived.toFixed(0)}%`}</dd>
+    <dt>Knocked over by you</dt><dd class="${stats.knockdowns ? 'you' : ''}">${stats.knockdowns}</dd>
+    <dt>Lost on its own</dt><dd class="${stats.lostOnItsOwn ? 'warn' : ''}">${stats.lostOnItsOwn}</dd>
     ${inFlightShove ? '<dt>Latest shove</dt><dd class="warn">deciding…</dd>' : ''}
   `;
 
-  $('shoveIntro').innerHTML = stats.shoves
-    ? `You have shoved the cart <strong>${stats.shoves}</strong> time${stats.shoves === 1 ? '' : 's'}. ` +
-      `Jev held on for <strong>${stats.recoveries}</strong> and went down <strong>${stats.knockdowns}</strong>.`
+  $('shoveIntro').innerHTML = stats.shoves || stats.episodes
+    ? `You have shoved the cart <strong>${stats.shoves}</strong> time${stats.shoves === 1 ? '' : 's'}: ` +
+      `Jev held on for <strong>${stats.recoveries}</strong>, you put it over <strong>${stats.knockdowns}</strong>, ` +
+      `and it lost <strong>${stats.lostOnItsOwn}</strong> without your help. A shove counts as survived if the episode lasts another half second.`
     : 'Click either side of the cart to knock it off balance, and see whether Jev can recover. ' +
       'A shove counts as survived if the episode lasts another half second.';
 }
@@ -376,12 +385,21 @@ function endEpisode(reason) {
   stats.episodes++;
   stats.total += score;
   if (score > stats.best) stats.best = score;
-  if (stats.unresolvedShove) stats.knockdowns++;
+
+  // Attribute the failure honestly. A shove that is still unresolved when the
+  // pole goes over is yours; an episode that ends with no shove in flight means
+  // Jev lost it by itself, and counting that as a knockdown would be a lie.
+  const byYou = stats.unresolvedShove && reason === 'fell';
+  if (byYou) stats.knockdowns++;
+  else if (reason === 'fell') stats.lostOnItsOwn++;
   stats.unresolvedShove = false;
 
   const cap = score >= MAX_STEPS ? ' (hit the 500-step cap)' : '';
-  const blamed = stats.knockdowns && reason === 'fell' ? '' : '';
-  log('episode', `episode ${stats.episodes} ended after <span class="v-num">${score}</span> steps — ${reason}${cap}${blamed}`);
+  log(
+    'episode',
+    `episode ${stats.episodes} ended after <span class="v-num">${score}</span> steps — ${reason}${cap}` +
+      (byYou ? ' — <span class="v-left">you knocked it over</span>' : reason === 'fell' ? ' — <span class="v-dim">it lost this one on its own</span>' : ''),
+  );
   trail = [];
 
   if (settings.autorestart && running) {
@@ -509,7 +527,11 @@ function frame(now) {
 
     const interval = 1000 / settings.rate;
     if (inFlight) {
-      if (now - lastDecisionAt >= interval) stats.skipped++;
+      // count missed decisions, not the frames spent waiting for one
+      if (now - lastDecisionAt >= interval) {
+        stats.skipped += Math.floor((now - lastDecisionAt) / interval);
+        lastDecisionAt = now;
+      }
     } else if (now - lastDecisionAt >= interval) {
       lastDecisionAt = now;
       decide();
@@ -585,7 +607,7 @@ function wire() {
   $('btnReset').onclick = () => {
     stop();
     Object.assign(stats, {
-      episodes: 0, best: 0, total: 0, shoves: 0, recoveries: 0, knockdowns: 0,
+      episodes: 0, best: 0, total: 0, shoves: 0, recoveries: 0, knockdowns: 0, lostOnItsOwn: 0,
       decisions: 0, skipped: 0, inputTokens: 0, outputTokens: 0, latencySum: 0, lastLatency: 0,
       unresolvedShove: false,
     });

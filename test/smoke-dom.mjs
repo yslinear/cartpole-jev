@@ -33,7 +33,7 @@ function anyObj(extra = {}) {
   });
 }
 
-const html = readFileSync(new URL('index.html', ROOT), 'utf8');
+const html = readFileSync(new URL('public/index.html', ROOT), 'utf8');
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 
 const elements = new Map();
@@ -106,7 +106,7 @@ process.on('uncaughtException', (e) => { failures.push(`uncaught: ${e.message}`)
 process.on('unhandledRejection', (e) => { failures.push(`unhandled rejection: ${e?.message ?? e}`); });
 
 try {
-  await import(pathToFileURL(new URL('src/app.js', ROOT).pathname).href);
+  await import(pathToFileURL(new URL('public/src/app.js', ROOT).pathname).href);
 } catch (e) {
   failures.push(`import threw: ${e.message}`);
 }

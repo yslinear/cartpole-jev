@@ -12,9 +12,9 @@
  *   - the raw JSON state        -> question set + raw
  */
 
-import { QUESTIONS } from '../src/questions.js';
-import { buildState } from '../src/state.js';
-import { askJev, DEFAULT_MODEL } from '../src/typesafe.js';
+import { QUESTIONS } from '../public/src/questions.js';
+import { buildState } from '../public/src/state.js';
+import { askJev, DEFAULT_MODEL } from '../public/src/typesafe.js';
 
 const PROXY = process.env.PROXY ?? 'http://localhost:8787';
 const KEY = process.env.TYPESAFE_API_KEY;

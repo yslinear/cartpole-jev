@@ -20,10 +20,10 @@
  *     TYPESAFE_API_KEY=... node test/play-headless.mjs --episodes 3 --every 5
  */
 
-import { step, resetState, MAX_STEPS } from '../src/cartpole.js';
-import { buildState } from '../src/state.js';
-import { QUESTIONS, POLICIES } from '../src/questions.js';
-import { askJev, DEFAULT_MODEL } from '../src/typesafe.js';
+import { step, resetState, MAX_STEPS } from '../public/src/cartpole.js';
+import { buildState } from '../public/src/state.js';
+import { QUESTIONS, POLICIES } from '../public/src/questions.js';
+import { askJev, DEFAULT_MODEL } from '../public/src/typesafe.js';
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);

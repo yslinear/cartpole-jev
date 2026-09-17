@@ -5,7 +5,7 @@
  * Compares against test/reference.py, which uses the real Gymnasium if available.
  */
 
-import { step, TAU } from '../src/cartpole.js';
+import { step, TAU } from '../public/src/cartpole.js';
 
 // Fixed, reproducible start state (radians for the pole quantities).
 let state = { x: 0.01, xDot: -0.02, theta: 0.03, thetaDot: 0.0 };

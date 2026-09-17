@@ -11,7 +11,7 @@
  * No API calls. Run:  node test/interval-limit.mjs
  */
 
-import { step, MAX_STEPS } from '../src/cartpole.js';
+import { step, MAX_STEPS } from '../public/src/cartpole.js';
 
 const START = { x: 0.02, xDot: 0.01, theta: -0.03, thetaDot: 0.02 };
 const pd = (s) => (s.theta + 0.2 * s.thetaDot > 0 ? 1 : 0);

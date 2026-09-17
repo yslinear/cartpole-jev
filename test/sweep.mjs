@@ -12,10 +12,10 @@
  *     TYPESAFE_API_KEY=... node test/sweep.mjs --runs 3
  */
 
-import { step, MAX_STEPS } from '../src/cartpole.js';
-import { buildState } from '../src/state.js';
-import { QUESTIONS, POLICIES } from '../src/questions.js';
-import { askJev, DEFAULT_MODEL } from '../src/typesafe.js';
+import { step, MAX_STEPS } from '../public/src/cartpole.js';
+import { buildState } from '../public/src/state.js';
+import { QUESTIONS, POLICIES } from '../public/src/questions.js';
+import { askJev, DEFAULT_MODEL } from '../public/src/typesafe.js';
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);

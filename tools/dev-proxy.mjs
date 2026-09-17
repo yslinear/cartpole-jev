@@ -18,6 +18,9 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+/** The site lives in public/ so the deployed cloudflare project only ever sees
+ *  the app, not the test harnesses and this dev server. Same layout as Pages. */
+const STATIC_ROOT = join(ROOT, 'public');
 const PORT = Number(process.env.PORT ?? 8787);
 const UPSTREAM = 'https://api.typesafe.ai';
 const UPSTREAM_PATH = '/v1/systemone';
@@ -97,12 +100,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // static files
+  // static files, from public/ -- same directory the Pages deploy uploads
   let path = decodeURIComponent(url.pathname);
   if (path === '/') path = '/index.html';
-  const target = join(ROOT, normalize(path).replace(/^(\.\.[/\\])+/, ''));
+  const target = join(STATIC_ROOT, normalize(path).replace(/^(\.\.[/\\])+/, ''));
 
-  if (!target.startsWith(ROOT)) {
+  if (!target.startsWith(STATIC_ROOT)) {
     res.writeHead(403).end('Forbidden');
     return;
   }
@@ -120,6 +123,7 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n  CartPole x Jev  —  dev server`);
   console.log(`  http://localhost:${PORT}`);
-  console.log(`  proxy: POST http://localhost:${PORT}${UPSTREAM_PATH} -> ${UPSTREAM}${UPSTREAM_PATH}`);
+  console.log(`  static: ${STATIC_ROOT}`);
+  console.log(`  proxy:  POST http://localhost:${PORT}${UPSTREAM_PATH} -> ${UPSTREAM}${UPSTREAM_PATH}`);
   console.log(`  put  http://localhost:${PORT}  in the app's "Proxy URL" field\n`);
 });
