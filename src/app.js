@@ -57,6 +57,10 @@ function loadSettings() {
     apiKey: '', model: DEFAULT_MODEL,
     representation: 'prose', policy: 'threshold',
     controlMode: 'jev',
+    // Newtons each side may apply. Default is FORCE_MAG, the standard CartPole
+    // value, so at the defaults the physics is still exactly Gymnasium's.
+    jevForceN: FORCE_MAG,
+    humanForceN: FORCE_MAG,
     rate: 10, simSpeed: 1, autorestart: true, verbose: false,
     ...saved,
   };
@@ -65,9 +69,9 @@ function loadSettings() {
 const settings = loadSettings();
 
 function persist() {
-  const { apiKey, model, representation, policy, controlMode, rate, simSpeed, autorestart, verbose } = settings;
+  const { apiKey, model, representation, policy, controlMode, rate, simSpeed, autorestart, verbose, jevForceN, humanForceN } = settings;
   localStorage.setItem(LS_KEY, JSON.stringify({
-    apiKey, model, representation, policy, controlMode, rate, simSpeed, autorestart, verbose,
+    apiKey, model, representation, policy, controlMode, rate, simSpeed, autorestart, verbose, jevForceN, humanForceN,
   }));
 }
 
@@ -75,9 +79,19 @@ function persist() {
 
 const human = { left: false, right: false };
 
-/** -10, 0 or +10 N. Holding both keys cancels out, which reads as "let go". */
+/** Total mass, so the UI can show what a given push actually does to the cart. */
+const TOTAL_MASS_KG = 1.1;
+
+/** -N, 0 or +N newtons. Holding both keys cancels out, which reads as "let go". */
 function humanForce() {
-  return (human.left ? -FORCE_MAG : 0) + (human.right ? FORCE_MAG : 0);
+  const n = settings.humanForceN;
+  return (human.left ? -n : 0) + (human.right ? n : 0);
+}
+
+/** What Jev pushes with, or 0 when it is not in control. */
+function jevForce() {
+  if (settings.controlMode === 'human') return 0;
+  return jevAction === 1 ? settings.jevForceN : -settings.jevForceN;
 }
 
 const humanPushing = () => settings.controlMode !== 'jev' && humanForce() !== 0;
@@ -236,7 +250,7 @@ function render() {
   }
 
   // a cancelled push is the signature moment of versus mode -- call it out
-  if (settings.controlMode === 'versus' && youDir && jevDir === -youDir) {
+  if (settings.controlMode === 'versus' && netForce === 0 && youDir) {
     ctx.font = '600 12px ui-monospace, Menlo, monospace';
     ctx.fillStyle = 'rgba(240,160,75,.95)';
     ctx.textAlign = 'center';
@@ -277,22 +291,30 @@ function render() {
   ctx.fillStyle = '#8593a6';
   ctx.fillText(`score ${score}`, 14, 24);
   ctx.fillText(`step ${score}/500`, 14, 44);
+  const held = Math.round(1000 / settings.rate);
+  ctx.fillText(`push held ${held} ms  (${held / (TAU * 1000)} physics steps)`, 14, 64);
+
+  let line = 88;
   if (settings.controlMode !== 'human') {
+    const jf = jevForce();
     ctx.fillStyle = '#45d6c3';
-    ctx.fillText(`Jev  ${jevAction === 1 ? '→' : '←'} ${jevAction === 1 ? '+10' : '−10'} N`, 14, 66);
+    ctx.fillText(`Jev  ${jf > 0 ? '→' : '←'} ${jf > 0 ? '+' : '−'}${Math.abs(jf)} N`, 14, line);
+    line += 20;
   }
   if (settings.controlMode !== 'jev') {
     const hf = humanForce();
     ctx.fillStyle = hf === 0 ? '#5d6b7e' : '#f0a04b';
-    ctx.fillText(`You  ${hf === 0 ? 'not pushing' : `${hf > 0 ? '→' : '←'} ${hf > 0 ? '+' : '−'}10 N`}`, 14, settings.controlMode === 'human' ? 66 : 86);
+    ctx.fillText(`You  ${hf === 0 ? 'not pushing' : `${hf > 0 ? '→' : '←'} ${hf > 0 ? '+' : '−'}${Math.abs(hf)} N`}`, 14, line);
+    line += 20;
   }
   if (settings.controlMode === 'versus') {
-    ctx.fillStyle = '#8fa3ba';
-    ctx.fillText(`net  ${netForce > 0 ? '+' : ''}${netForce} N`, 14, 106);
+    ctx.fillStyle = netForce === 0 ? '#f0a04b' : '#8fa3ba';
+    ctx.fillText(`net  ${netForce > 0 ? '+' : ''}${netForce} N  →  ${Math.abs(netForce / TOTAL_MASS_KG).toFixed(1)} m/s²`, 14, line);
+    line += 20;
   }
   if (inFlight) {
     ctx.fillStyle = '#f0a04b';
-    ctx.fillText('waiting for Jev…', 14, settings.controlMode === 'versus' ? 126 : 86);
+    ctx.fillText('waiting for Jev…', 14, line);
   }
 }
 
@@ -483,7 +505,7 @@ function frame(now) {
   if (running) {
     // ---- the whole versus mechanic, in two lines --------------------------
     const hf = settings.controlMode === 'jev' ? 0 : humanForce();
-    const jf = settings.controlMode === 'human' ? 0 : (jevAction === 1 ? FORCE_MAG : -FORCE_MAG);
+    const jf = jevForce();
     netForce = jf + hf;
     // ----------------------------------------------------------------------
 
@@ -593,6 +615,22 @@ function wire() {
   $('model').oninput = (e) => { settings.model = e.target.value.trim(); persist(); };
   $('rate').oninput = (e) => { settings.rate = +e.target.value; $('rateOut').textContent = settings.rate; persist(); };
   $('speed').oninput = (e) => { settings.simSpeed = +e.target.value; $('speedOut').textContent = `${settings.simSpeed}×`; persist(); };
+
+  $('jevForce').value = settings.jevForceN;
+  $('jevForceOut').textContent = `${settings.jevForceN} N`;
+  $('humanForce').value = settings.humanForceN;
+  $('humanForceOut').textContent = `${settings.humanForceN} N`;
+
+  $('jevForce').oninput = (e) => {
+    settings.jevForceN = +e.target.value;
+    $('jevForceOut').textContent = `${settings.jevForceN} N`;
+    persist();
+  };
+  $('humanForce').oninput = (e) => {
+    settings.humanForceN = +e.target.value;
+    $('humanForceOut').textContent = `${settings.humanForceN} N`;
+    persist();
+  };
   $('autorestart').onchange = (e) => { settings.autorestart = e.target.checked; persist(); };
   $('verbose').onchange = (e) => { settings.verbose = e.target.checked; persist(); };
 
