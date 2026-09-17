@@ -191,7 +191,8 @@ identical**, so adding the human did not disturb the verified dynamics.
 
 | | |
 |---|---|
-| **Live** | <https://cartpole-jev.pages.dev> |
+| **Live** | <https://cartpole-jev.yslinear.dev> |
+| **Also** | <https://cartpole-jev.pages.dev> |
 | **Platform** | Cloudflare Pages + one Pages Function |
 | **Config needed** | none — `API_BASE` is `''`, same origin |
 
@@ -239,9 +240,37 @@ npx wrangler login
 npx wrangler pages deploy . --project-name cartpole-jev --branch main
 ```
 
-The site must be served at a **domain root** (`cartpole-jev.pages.dev`, or a subdomain like
-`cartpole.yslinear.dev`). A subpath deployment such as `/cartpole-jev/` would move the route to
-`/cartpole-jev/v1/systemone` and break the relative call.
+The site must be served at a **domain root** (`cartpole-jev.yslinear.dev`, or the
+`cartpole-jev.pages.dev` default). A subpath deployment such as `/cartpole-jev/` would move the
+route to `/cartpole-jev/v1/systemone` and break the relative call.
+
+`wrangler` has no command for custom domains, so that one step uses the API:
+
+```bash
+curl -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/cartpole-jev/domains" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"cartpole-jev.yslinear.dev"}'
+```
+
+Then add the DNS record **by hand**. Adding a custom domain through the API does *not* create it,
+even when the zone is in the same account — the domain sits at
+`verification_data.error_message: "CNAME record not set"` until the record exists. (The
+dashboard's own “Add a custom domain” flow does offer to create it for you; the API does not.)
+
+```
+type    CNAME
+name    cartpole-jev
+target  cartpole-jev.pages.dev
+proxied ON      <- required, or the certificate never issues
+```
+
+Verify with DNS rather than trusting the dashboard:
+
+```bash
+dig +short cartpole-jev.yslinear.dev CNAME
+curl -s -o /dev/null -w '%{http_code}\n' https://cartpole-jev.yslinear.dev/
+```
 
 ### Two things worth knowing
 
