@@ -45,6 +45,19 @@
         <span>Auto-restart episodes</span>
       </label>
     </div>
+
+    <div class="playbar">
+      <div class="segmented" id="modeSeg" role="tablist"></div>
+      <div class="pushpad">
+        <button id="pushLeft" class="push push-left" aria-label="Push the cart left">
+          <span class="key">←</span> Left
+        </button>
+        <button id="pushRight" class="push push-right" aria-label="Push the cart right">
+          Right <span class="key">→</span>
+        </button>
+      </div>
+    </div>
+    <p class="hint" id="modeHint"></p>
   </section>
 
   <!-- --------------------------------------------------------------- config -->
@@ -56,24 +69,19 @@
         <span>TypeSafe API key</span>
         <input id="apiKey" type="password" placeholder="ts_..." autocomplete="off" spellcheck="false">
       </label>
-      <label class="field">
-        <span>Proxy URL</span>
-        <input id="proxyUrl" type="url" placeholder="https://your-worker.workers.dev" spellcheck="false">
-      </label>
-      <p class="hint" id="proxyHint"></p>
-      <label class="field">
-        <span>Model</span>
-        <input id="model" type="text" value="jev-latest" spellcheck="false">
-      </label>
       <div class="row">
-        <button id="btnTest">Test connection</button>
-        <button id="btnForget" class="ghost">Forget key</button>
+        <button id="btnTest">Test</button>
+        <button id="btnForget" class="ghost">Forget</button>
       </div>
       <p class="hint">
-        Your key is stored in this browser's localStorage only and is sent to
-        <strong>your</strong> proxy, which forwards it to api.typesafe.ai.
-        Nothing here logs it.
+        Stored in this browser only, sent straight to TypeSafe, never logged.
       </p>
+      <details>
+        <summary>Model</summary>
+        <label class="field" style="margin-top:8px">
+          <input id="model" type="text" value="jev-latest" spellcheck="false">
+        </label>
+      </details>
     </section>
 
     <section class="card">
@@ -92,6 +100,16 @@
         <pre class="json-preview" id="questionPreview"></pre>
         <p class="hint" id="questionCost"></p>
       </details>
+    </section>
+
+    <section class="card">
+      <h2>You vs Jev</h2>
+      <p class="hint" id="h2hIntro"></p>
+      <dl class="stats" id="head2head"></dl>
+      <p class="hint">
+        Steps are credited to whoever commanded them, so a takeover episode is split
+        correctly between you and the model.
+      </p>
     </section>
 
     <section class="card">

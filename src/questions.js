@@ -15,10 +15,10 @@ export const QUESTIONS = {
     instructions:
       'A cart on a track carries an upright pole on a free hinge. The cart can only be pushed to the ' +
       'left or to the right, and pushing is the only way to influence the pole. To stop the pole from ' +
-      'falling over, should the cart be pushed to the RIGHT on this step?',
+      'falling over, should YOU push the cart to the RIGHT on this step?',
     criteria: {
-      true: 'Pushing right is the better of the two available choices right now.',
-      false: 'Pushing left is the better choice right now, or neither choice is meaningfully better.',
+      true: 'Pushing right is the better of the two choices available to you right now.',
+      false: 'Pushing left is the better choice for you right now, or neither is meaningfully better.',
     },
   },
 
@@ -26,10 +26,11 @@ export const QUESTIONS = {
     type: 'choice',
     instructions:
       'A cart on a track carries an upright pole on a free hinge. The cart can only be pushed to the ' +
-      'left or to the right. Which single action should be applied right now to stop the pole from falling over?',
+      'left or to the right. Which single direction should YOU push the cart right now to stop the ' +
+      'pole from falling over?',
     criteria: {
-      push_left: 'Push the cart to the left.',
-      push_right: 'Push the cart to the right.',
+      push_left: 'You push the cart to the left.',
+      push_right: 'You push the cart to the right.',
     },
   },
 

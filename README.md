@@ -1,168 +1,75 @@
 # CartPole × Jev
 
-Watch a decision model balance an inverted pendulum, live, in your browser.
+Watch a decision model balance an inverted pendulum — and then try to knock it over yourself.
 
-This is not reinforcement learning and there is no vision. The app sends TypeSafe's
-[Jev](https://docs.typesafe.ai) a **text description of the game state** and a **fixed set of
-questions**, gets back typed answers with probabilities, and turns one of them into a
-left-or-right push. Everything else — the physics, the control loop, the decision of which
-answer to trust — is ordinary JavaScript you can read.
+There is no reinforcement learning and no vision here. The app sends TypeSafe's
+[Jev](https://docs.typesafe.ai) a **text description of the game state** plus a **fixed set of
+questions**, gets back typed answers with probabilities, and turns one of them into a push.
+Everything else — the physics, the control loop, the decision about which answer to trust —
+is ordinary JavaScript you can read.
 
-The point is to make the shape of "AI as a programming primitive" concrete, and to show
-honestly where it succeeds and where a five-line `if` statement beats it.
+Three modes:
 
----
-
-## Quick start (local, no deploy)
-
-```bash
-node tools/dev-proxy.mjs          # serves this folder and proxies the API
-```
-
-Then open <http://localhost:8787>, paste your TypeSafe API key, put
-`http://localhost:8787` in the **Proxy URL** field, and press **Start**.
-
-There are no dependencies to install. Node 18+ is enough.
-
----
-
-## The CORS problem, and why you need a proxy
-
-A static GitHub Pages site cannot call `api.typesafe.ai` directly. Every browser origin is
-rejected on preflight. Measured, not guessed:
-
-```bash
-curl -i -X OPTIONS https://api.typesafe.ai/v1/systemone \
-  -H "Origin: https://yslinear.github.io" \
-  -H "Access-Control-Request-Method: POST" \
-  -H "Access-Control-Request-Headers: authorization,content-type"
-```
-
-```
-HTTP/2 400
-access-control-allow-methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
-access-control-allow-headers: Accept, ..., Authorization, ...
-Disallowed CORS origin
-```
-
-That result is identical for `https://console.typesafe.ai`, `http://localhost:8080`,
-`http://127.0.0.1:8000`, `null`, `*` and `*.github.io`. The server is behind an Istio/Envoy
-CORS filter with an origin allowlist that does not include web pages. A real `POST` still
-returns `200` — but without an `Access-Control-Allow-Origin` header, so the browser discards
-the response.
-
-The fix is a pass-through proxy. Two are included:
-
-| | Use it for | Command |
-|---|---|---|
-| `tools/dev-proxy.mjs` | local development | `node tools/dev-proxy.mjs` |
-| `worker/worker.js` | a deployed GitHub Pages site | see below |
-
----
-
-## Deploying to GitHub Pages
-
-### 1. Deploy the proxy (once, free)
-
-The Worker is ~90 lines, stateless, and hard-codes the upstream host so it cannot be used
-as a general-purpose open relay.
-
-```bash
-cd worker
-npx wrangler deploy
-```
-
-Wrangler prints a URL like `https://typesafe-cors-proxy.<you>.workers.dev`. Open it in a
-browser — you should see `{"ok":true,...}`.
-
-To lock it down, edit `worker/wrangler.toml` and set `ALLOWED_ORIGINS` to your Pages
-origin, e.g. `"https://yslinear.github.io"`. For an extra gate:
-
-```bash
-npx wrangler secret put PROXY_TOKEN
-```
-
-### 2. Turn on Pages
-
-Push to `main`, then in **Settings → Pages** set the source to **GitHub Actions**. The
-included workflow (`.github/workflows/deploy-pages.yml`) publishes the repo root. There is
-no build step.
-
-### 3. Tell users the URL
-
-The app stores the proxy URL in `localStorage` per visitor. You can ship a default by
-editing the `proxyUrl` initial value in `src/app.js`.
-
----
-
-## Security: read this before hosting a public instance
-
-- **The API key is the user's own.** It is typed into the page, kept in that browser's
-  `localStorage`, sent to your proxy, and forwarded to `api.typesafe.ai`. It is never
-  written to disk, logged, or stored by either proxy.
-- **The key does transit your proxy.** Whoever operates it can, in principle, observe
-  keys in flight. That is inherent to any CORS workaround. If that is unacceptable,
-  self-host the Worker, or run `tools/dev-proxy.mjs` locally so the key never leaves
-  the machine.
-- **A public proxy is an open relay** for anyone with their own valid key. It cannot leak
-  your credentials, but it can consume your Cloudflare quota. Set `ALLOWED_ORIGINS` and/or
-  `PROXY_TOKEN` if you care.
-- Deploying the proxy on someone else's behalf means their keys pass through your Worker.
-  Say so plainly in your own README.
-
----
-
-## Cost
-
-Measured on real requests (`node test/token-split.mjs`):
-
-| payload | input tokens |
+| | what happens |
 |---|---|
-| the fixed question set alone | **670** |
-| + prose state | 734 (+64) |
-| + raw JSON state | 718 (+48) |
-| + coarse state | 701 (+31) |
-
-TypeSafe has **no prompt caching** — the request body is just `state`, `model`, `questions`,
-and all three are re-sent every call. So **91% of every frame is the question set**, not the
-game state.
-
-At 10 decisions/second that is about **$1.11/hour, of which $1.01/hour is re-sending the
-same questions**. Output tokens are free.
-
-This is the single most actionable finding in the repo: if you want a cheap real-time loop,
-**shorten your questions**, not your state. A CartPole episode at 5 steps/decision costs
-roughly $0.0003.
+| **Jev alone** | the model balances the pole. This is the baseline. |
+| **You alone** | you push with ← / →. No API calls, so it is free — and it is your own baseline. |
+| **Versus** | **both of you push the same cart at the same time, and the forces add.** |
 
 ---
 
-## Findings
+## Quick start
 
-### The physics is a faithful port
-
-`src/cartpole.js` is ported from Gymnasium's `classic_control/cartpole.py`. `test/compare.mjs`
-runs both side by side for 400 steps and asserts identical control decisions:
-
-```
-  CartPole physics: JS vs Gymnasium
-  samples compared .......... 20
-  control actions differing .. 0
-  worst divergence .......... 9.61e-8 on thetaDot @ step 400
-  tolerance ................. 1.00e-6
-  PASS — identical decisions, trajectories agree to floating-point precision.
+```bash
+node tools/dev-proxy.mjs
 ```
 
-Default Gymnasium uses **explicit** Euler (`kinematics_integrator = "euler"`), not the
-semi-implicit variant, and the reset distribution is `U(-0.05, 0.05)` over all four
-values. Both are replicated.
+Open <http://localhost:8787>, paste your TypeSafe API key, press **Start**. That is the whole
+setup — there is no proxy URL to configure, no dependencies, no build step. Node 18+ is all
+you need.
 
-### Does Jev actually play?
+---
 
-Yes, but the interesting part is *when* it stops working, and why the obvious
-comparison is unfair.
+## Versus mode: how the tug-of-war works
+
+The cart has one force acting on it, and both players write into it:
+
+```
+net force = (Jev pushing right ? +10 N : −10 N) + (you holding a key ? ±10 N : 0)
+```
+
+| Jev | You | net | what you see |
+|---|---|---|---|
+| right | right | **+20 N** | a double push right |
+| right | left | **0 N** | *forces cancelled — the cart coasts* |
+| right | nothing | **+10 N** | Jev pushes alone |
+
+With nobody touching the keys, the arithmetic degenerates exactly to the stock CartPole
+action, so the verified physics below is unaffected. The app draws both force arrows
+separately, and calls out the deadlock whenever your push cancels Jev's.
+
+**Jev is told that you exist.** Its state includes a sentence like *"A person is fighting you
+for this cart, and they are pushing it LEFT at 10 N"*, plus an explanation that the forces
+add. Remove that sentence and the model has no way to know its pushes are being cancelled —
+which is the single most interesting thing to experiment with here. It is also the reason the
+state preview panel is worth watching while you play.
+
+### An honest note about the game
+
+A perfect counter-strategy exists: push the opposite way every time. That holds the net force
+at 0 N, the cart coasts, and the pole falls under gravity alone. No balancer can defend
+against it. The game is therefore not a fair fight at the top level of play — it is a
+demonstration that **an adversary with equal authority over the same actuator can always
+defeat the controller**, which is a real property of shared-actuator systems. What makes it
+fun in practice is that a human cannot track Jev's direction changes at 10 Hz, so you are
+always playing a few hundred milliseconds behind.
+
+---
+
+## Does Jev actually play?
 
 CartPole's action is a constant 10 N push, not a proportional force. Holding any decision for
-too many 20 ms steps overcorrects and destabilises the pole. A **perfect hand-written
+too many 20 ms steps overcorrects and destabilises the pole, so a **perfect hand-written
 controller** degrades like this (`node test/interval-limit.mjs`):
 
 ```
@@ -177,8 +84,10 @@ controller** degrades like this (`node test/interval-limit.mjs`):
   10     200 ms        10  fell    ····················
 ```
 
-So a fair test compares Jev against a baseline **held for the same interval**. Measured
-(`node test/sweep.mjs --runs 2`, single fixed start state):
+Past roughly 140 ms of held action, **nothing** can play this game. Any comparison that does
+not give the baseline the same decision interval is meaningless.
+
+Against a baseline held for the same interval (`node test/sweep.mjs --runs 2`):
 
 ```
   configuration                       mean  best  worst  caps   tok/episode      cost
@@ -193,17 +102,12 @@ So a fair test compares Jev against a baseline **held for the same interval**. M
   Jev prose/threshold, every 10 steps   10    10     10   0/2           734  $0.00003
 ```
 
-**At a decision every step, Jev scores a perfect 500/500 and exactly matches the
-hand-written controller.** At a 5-step interval it collapses to 47 while the baseline still
-manages 263. Past ~140 ms of held action, *nothing* can play — both score 10 — so those rows
-say nothing about Jev either way.
+**Deciding every single step, Jev scores a perfect 500 and exactly matches the hand-written
+controller.** At a 5-step interval it collapses to 47 while the baseline still manages 263.
+Jev's decisions are good enough to replace a hand-tuned rule when it can decide as often as it
+wants, and it degrades faster than a purpose-built controller when decisions get expensive.
 
-The honest conclusion: Jev's decisions are good enough to replace a hand-tuned rule **when
-it can decide as often as it wants**, and it degrades faster than a purpose-built controller
-when decisions get expensive. That is a sensible place for a general model to land, and it
-is the opposite of the Doom demo's framing.
-
-### The state representation and the policy both matter, but the sample is small
+### The state representation matters, but the sample is small
 
 At a 5-step interval, where everyone is struggling, 2 runs per configuration:
 
@@ -219,46 +123,115 @@ At a 5-step interval, where everyone is struggling, 2 runs per configuration:
   prose                 composite        119    191      47
 ```
 
-Two weak signals, not conclusions — the run-to-run spread (47 to 191 for the same
-configuration) is as large as the differences between configurations. Directionally: hiding
-magnitude from the model (`coarse`) hurts, and reading the **Noul** beats reading the
-**Choice** here, which is the opposite of the intuitive choice. Treat these as a reason to
-run your own sweep, not as findings.
+Directionally: hiding magnitude from the model (`coarse`) hurts, and reading the **Noul**
+beats reading the **Choice** here — the opposite of the intuitive pick. But the run-to-run
+spread (47 to 191 for one configuration) is as large as the differences between
+configurations. Treat these as a reason to run your own sweep, not as findings.
 
-Run it yourself:
+---
+
+## Cost, and the one number worth knowing
+
+Measured on real requests (`node test/token-split.mjs`):
+
+| payload | input tokens |
+|---|---|
+| the fixed question set alone | **670** |
+| + prose state | 734 (+64) |
+| + raw JSON state | 718 (+48) |
+| + coarse state | 701 (+31) |
+
+TypeSafe has **no prompt caching** — the request body is just `state`, `model`, `questions`,
+and all three are re-sent every call. So **91% of every frame is the question set**, not the
+game state.
+
+At 10 decisions/second that is about **$1.11/hour, of which $1.01/hour is re-sending the same
+questions.** Output tokens are free. If you want a cheap real-time loop, **shorten your
+questions, not your state.**
+
+---
+
+## The physics is a faithful port
+
+`src/cartpole.js` is ported from Gymnasium's `classic_control/cartpole.py`, and
+`test/compare.mjs` runs both side by side for 400 steps:
+
+```
+  CartPole physics: JS vs Gymnasium
+  control actions differing .. 0
+  worst divergence .......... 9.61e-8 on thetaDot @ step 400
+  tolerance ................. 1.00e-6
+  PASS — identical decisions, trajectories agree to floating-point precision.
+```
+
+Two details that are easy to get wrong: Gymnasium's default integrator is **explicit** Euler
+(`kinematics_integrator = "euler"`), not the semi-implicit variant; and the reset distribution
+is `U(-0.05, 0.05)` over all four values.
+
+The versus mode needed force-based stepping, so `stepForce(state, newtons)` was added and
+`step(state, action)` now delegates to it. That refactor is checked too — over 4,432 steps
+across 200 random trajectories, `stepForce(±10)` and `step(action)` are **bit-for-bit
+identical**, so adding the human did not disturb the verified dynamics.
+
+---
+
+## Why there is no proxy URL in the UI
+
+There used to be one, and there is a reason it went away.
+
+`api.typesafe.ai` answers every browser origin with `400 Disallowed CORS origin` — verified
+against `*.github.io`, `localhost:8080`, `localhost:5173`, `null`, `*` and even
+`console.typesafe.ai`. So a page cannot call it directly.
+
+But it does not follow that users should be pasting URLs. `tools/dev-proxy.mjs` serves the
+page **and** the API route from one origin, so the app just calls the same-origin path
+`/v1/systemone` and CORS never enters the picture. Hence `src/config.js`:
+
+```js
+export const API_BASE = '';   // '' = same origin
+```
+
+**Local use needs no configuration at all.** The one case that still needs something is a
+host with no backend, like GitHub Pages — for that, deploy the included Worker, set
+`API_BASE` to its URL, and that is the only line anyone has to touch.
 
 ```bash
-node tools/dev-proxy.mjs &
-TYPESAFE_API_KEY=... node test/sweep.mjs --runs 3
+cd worker && npx wrangler deploy     # prints https://typesafe-cors-proxy.you.workers.dev
 ```
+
+The Worker is stateless, hard-codes the upstream host so it cannot become a general open
+relay, and supports `ALLOWED_ORIGINS` and `PROXY_TOKEN` to lock it down.
+
+### Security
+
+- The API key is the user's own. It lives in that browser's `localStorage`, is sent to the
+  API, and is never logged or written to disk. `src/app.js` never logs headers.
+- If you point `API_BASE` at a proxy you operate, keys transit it. That is inherent to any
+  CORS workaround. Self-host the Worker, or run locally, if that matters.
+- `.gitignore` excludes `.env` files so a key can never be committed by accident.
 
 ---
 
 ## What the app lets you change
 
-The interface is built so you can feel the design surface, not just watch a demo.
+**How Jev sees the state** — three views of the same four numbers: `prose` (full sentences
+with degrees), `raw` (bare JSON numbers), `coarse` (qualitative buckets, no numbers at all).
+The live preview shows exactly what is being sent, including the opponent sentence when you
+are in versus mode.
 
-**How Jev sees the state** — three representations of the same four numbers:
-
-| | what it sends | why it matters |
-|---|---|---|
-| `prose` | full sentences with degrees, one per physical quantity | closest to how a human would describe it |
-| `raw` | bare JSON numbers, no interpretation | lets the model do its own arithmetic |
-| `coarse` | qualitative buckets only, no numbers | shortest, but throws away magnitude |
-
-**Which answer drives the cart** — every question is always asked (speculative fan-out);
-the policy only decides which answer to consume, at zero extra inference cost:
+**Which answer drives the cart** — every question is always asked (speculative fan-out); the
+policy only decides which answer to consume, at zero extra inference cost:
 
 | | rule |
 |---|---|
 | `threshold` | push right if `P(right) > 0.5` |
-| `gated` | only move when the margin is decisive, else hold the previous action |
+| `gated` | only move when the margin is decisive, else hold |
 | `choice` | use the Choice primitive and ignore the Noul |
 | `composite` | blend the Noul with the instability Score in JavaScript |
 
-**Plus** a live decision log showing every latency, token count, probability and action; a
-decision-rate slider; and a sim-speed slider so you can slow the world down when network
-latency makes real-time control impossible.
+**Plus** a live decision log with every latency, token count, probability and action; a
+decision-rate slider; and a sim-speed slider, because when network latency makes real-time
+control impossible, slowing the world down is the only honest workaround.
 
 ---
 
@@ -266,40 +239,41 @@ latency makes real-time control impossible.
 
 ```
 index.html               the page
-src/cartpole.js          Gymnasium CartPole-v1 physics (no dependencies)
-src/state.js             state -> text. The actual design surface.
-src/questions.js         the fixed question set + the policies that consume answers
-src/typesafe.js          API client with CORS-aware error messages
-src/app.js               the loop, the canvas, the log
-worker/worker.js         Cloudflare Worker CORS pass-through
-tools/dev-proxy.mjs      local dev: static server + proxy, zero dependencies
-test/compare.mjs         physics regression test vs Gymnasium
-test/play-headless.mjs   headless episodes with fair baselines
-test/sweep.mjs           parameter sweep
+src/config.js            the one line of configuration you might ever edit
+src/cartpole.js          CartPole-v1 physics, plus the force-based step
+src/state.js             state -> text, including the opponent sentence
+src/questions.js         the fixed question set + the four policies
+src/typesafe.js          API client with CORS-aware errors
+src/app.js               the loop, the canvas, the force arithmetic, the log
+worker/worker.js         optional Cloudflare Worker, only for static hosts
+tools/dev-proxy.mjs      local dev: static server + API route on one origin
+test/compare.mjs         physics regression vs Gymnasium
+test/interval-limit.mjs  the environment's control-theoretic ceiling
 test/token-split.mjs     where the per-frame tokens go
+test/play-headless.mjs   headless episodes with fair baselines
+test/versus-headless.mjs counter-strategies against Jev, with and without telling it
+test/sweep.mjs           parameter sweep
 ```
 
 ## Testing
 
 ```bash
-# physics vs the real Gymnasium (needs gymnasium in a venv)
+# physics vs the real Gymnasium
 uv venv /tmp/cpenv --python 3.12
 uv pip install --python /tmp/cpenv/bin/python gymnasium
 PYTHON=/tmp/cpenv/bin/python node test/compare.mjs
 
-# token accounting
-node tools/dev-proxy.mjs &
-node test/token-split.mjs
-
-# episodes with baselines
+node test/interval-limit.mjs      # no API calls
+node tools/dev-proxy.mjs &        # the next few need this running
+TYPESAFE_API_KEY=... node test/token-split.mjs
 TYPESAFE_API_KEY=... node test/play-headless.mjs --episodes 3 --every 5
+TYPESAFE_API_KEY=... node test/versus-headless.mjs --episodes 2
 ```
 
 ---
 
 ## License
 
-The CartPole port derives from Gymnasium (Farama Foundation), BSD-3-Clause; the equations
-originate in Barto, Sutton & Anderson (1983) via
+The CartPole implementation derives from Gymnasium (Farama Foundation), BSD-3-Clause; the
+equations originate in Barto, Sutton & Anderson (1983) via
 [the 2005 cart-pole note](https://coneural.org/florian/papers/05_cart_pole.pdf).
-Everything else here is yours to do what you like with.

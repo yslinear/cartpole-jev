@@ -12,22 +12,57 @@ import { X_THRESHOLD, THETA_THRESHOLD, toDegrees } from './cartpole.js';
 const side = (v) => (v >= 0 ? 'right' : 'left');
 const abs = Math.abs;
 
+/**
+ * Description of the human opponent, when there is one.
+ *
+ * This matters more than it looks. Jev only learns that someone is fighting it
+ * for the cart from this text. Leave it out and the model has no way to know its
+ * pushes are being cancelled -- which is exactly the point of the versus mode.
+ */
+function humanContext(force) {
+  if (force === null || force === undefined) return null;
+  const who = force === 0 ? 'not pushing right now' : `pushing ${side(force).toUpperCase()} at ${abs(force)} N`;
+  return { force, who };
+}
+
+function humanSentence(force) {
+  if (force === 0) {
+    return (
+      'A person is fighting you for this cart. Right now they are not pushing it at all.\n' +
+      'Their force and yours are applied to the cart together and add up: if you both push the same ' +
+      'way the cart gets 20 N, and if you push opposite ways the two forces cancel to 0 N and the ' +
+      'cart is not pushed at all.'
+    );
+  }
+  return (
+    `A person is fighting you for this cart, and they are pushing it ${side(force).toUpperCase()} at ${abs(force)} N.\n` +
+    'Their force and yours are applied to the cart together and add up: if you also push ' +
+    `${side(force).toUpperCase()} the cart gets 20 N, but if you push ${side(-force).toUpperCase()} ` +
+    'the two forces cancel to 0 N and the cart is not pushed at all.'
+  );
+}
+
 // ---------------------------------------------------------------------------
 // representation 1: raw numbers as JSON
 // ---------------------------------------------------------------------------
-function raw(s) {
-  return {
+function raw(s, humanForce) {
+  const out = {
     cart_position: +s.x.toFixed(4),
     cart_velocity: +s.xDot.toFixed(4),
     pole_angle_degrees: +toDegrees(s.theta).toFixed(3),
     pole_angular_velocity_deg_per_s: +toDegrees(s.thetaDot).toFixed(3),
   };
+  if (humanForce !== null && humanForce !== undefined) {
+    out.person_pushing_newtons = humanForce; // negative = left, positive = right
+    out.forces_add = true;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
 // representation 2: plain prose, one sentence per physical quantity
 // ---------------------------------------------------------------------------
-function prose(s) {
+function prose(s, humanForce) {
   const angleDeg = toDegrees(s.theta);
   const rateDeg = toDegrees(s.thetaDot);
   const pct = (abs(s.x) / X_THRESHOLD) * 100;
@@ -41,11 +76,13 @@ function prose(s) {
       ? 'roughly holding its angle'
       : `rotating further ${side(rateDeg)} at ${abs(rateDeg).toFixed(0)}°/s`;
 
-  return (
-    `Cart: ${where} (${pct.toFixed(0)}% of the way to the end of the track), ${cartMove}.\n` +
-    `Pole: leaning ${lean}, and ${fall}.\n` +
-    `The episode ends if the pole passes ${toDegrees(THETA_THRESHOLD).toFixed(0)}° from upright or the cart reaches the end of the track.`
-  );
+  const lines = [
+    `Cart: ${where} (${pct.toFixed(0)}% of the way to the end of the track), ${cartMove}.`,
+    `Pole: leaning ${lean}, and ${fall}.`,
+    `The episode ends if the pole passes ${toDegrees(THETA_THRESHOLD).toFixed(0)}° from upright or the cart reaches the end of the track.`,
+  ];
+  if (humanForce !== null && humanForce !== undefined) lines.push(humanSentence(humanForce));
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +94,7 @@ function bucket(v, edges, labels) {
   return labels[labels.length - 1];
 }
 
-function coarse(s) {
+function coarse(s, humanForce) {
   const angleDeg = toDegrees(s.theta);
   const rateDeg = toDegrees(s.thetaDot);
 
@@ -66,10 +103,13 @@ function coarse(s) {
   const place = bucket(s.x, [0.6, 1.5, 2.0, 2.4], ['near the centre', 'off-centre', 'near the end', 'almost out of track', 'out']);
   const drift = bucket(s.xDot, [0.2, 0.8], ['almost still', 'drifting', 'sliding fast']);
 
-  return {
+  const out = {
     pole: `${lean}, and ${fall} to the ${side(angleDeg)}`,
     cart: `${place}, ${drift} to the ${side(s.xDot)}`,
   };
+  const human = humanContext(humanForce);
+  if (human) out.opponent = human.who;
+  return out;
 }
 
 export const REPRESENTATIONS = {
@@ -90,7 +130,7 @@ export const REPRESENTATIONS = {
   },
 };
 
-export function buildState(state, representation) {
+export function buildState(state, representation, options = {}) {
   const spec = REPRESENTATIONS[representation] ?? REPRESENTATIONS.prose;
-  return spec.build(state);
+  return spec.build(state, options.humanForce ?? null);
 }

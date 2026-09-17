@@ -32,15 +32,18 @@ export function resetState() {
 }
 
 /**
- * Advance the simulation by exactly one tau.
+ * Advance the simulation by exactly one tau using an arbitrary force in Newtons.
  *
- * Note the default Gymnasium integrator is *explicit* Euler (they call it
- * "euler"); the semi-implicit variant is opt-in. We match the default so the
- * trajectories are identical.
+ * The stock CartPole action is +/- FORCE_MAG; this generalisation is what lets a
+ * human and the model push the same cart at the same time, with the forces
+ * adding. With only the model pushing (or only the human), the arithmetic is
+ * bit-for-bit the same as the discrete-action version below, so the Gymnasium
+ * equivalence still holds.
+ *
+ * A force of 0 is legal and means the cart coasts.
  */
-export function step(state, action) {
+export function stepForce(state, force) {
   let { x, xDot, theta, thetaDot } = state;
-  const force = action === ACTION_RIGHT ? FORCE_MAG : -FORCE_MAG;
   const costheta = Math.cos(theta);
   const sintheta = Math.sin(theta);
 
@@ -61,6 +64,15 @@ export function step(state, action) {
     x < -X_THRESHOLD || x > X_THRESHOLD || theta < -THETA_THRESHOLD || theta > THETA_THRESHOLD;
 
   return { state: next, reward: 1, terminated };
+}
+
+/**
+ * The standard discrete CartPole step. Note the default Gymnasium integrator is
+ * *explicit* Euler (they call it "euler"); the semi-implicit variant is opt-in.
+ * We match the default so the trajectories are identical.
+ */
+export function step(state, action) {
+  return stepForce(state, action === ACTION_RIGHT ? FORCE_MAG : -FORCE_MAG);
 }
 
 /** Degrees are friendlier than radians when we talk to a language model. */

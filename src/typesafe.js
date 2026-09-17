@@ -1,15 +1,16 @@
 /**
  * TypeSafe API client.
  *
- * IMPORTANT: api.typesafe.ai rejects *every* browser origin on preflight
- * (verified against console.typesafe.ai, localhost, null and *.github.io), so a
- * page served from GitHub Pages cannot call it directly. Requests must go
- * through a small pass-through proxy that adds the CORS headers, which is what
- * `worker/` in this repo is for. The proxy is stateless and does not log the key.
+ * The endpoint is whatever src/config.js says, defaulting to a same-origin
+ * relative path. See that file for why pointing at api.typesafe.ai directly is
+ * not an option from a browser.
  */
 
-export const DIRECT_API = 'https://api.typesafe.ai';
+import { API_BASE } from './config.js';
+
 export const DEFAULT_MODEL = 'jev-latest';
+
+export const usingSameOrigin = () => API_BASE === '';
 
 /** A BrowserBlockedError means the request never reached TypeSafe. */
 export class BrowserBlockedError extends Error {
@@ -39,16 +40,18 @@ export class ApiError extends Error {
  * @returns {{answers: object, usage: {input_tokens:number, output_tokens:number},
  *            model: string, latencyMs: number, requestId: string|null}}
  */
-export async function askJev({ baseUrl, apiKey, state, questions, model = DEFAULT_MODEL, signal }) {
+export async function askJev({ apiKey, state, questions, model = DEFAULT_MODEL, signal, baseUrl }) {
   if (!apiKey) throw new Error('No API key set.');
 
-  const base = (baseUrl || '').trim().replace(/\/+$/, '');
-  if (!base) throw new Error('No proxy URL set.');
-
+  // `baseUrl` is an escape hatch for the Node test harnesses, which talk to a
+  // local proxy instead of the origin that served the page. The browser never
+  // passes it, so end users only ever supply a key.
+  const root = (baseUrl ?? API_BASE).replace(/\/+$/, '');
+  const url = `${root}/v1/systemone`;
   const started = performance.now();
   let res;
   try {
-    res = await fetch(`${base}/v1/systemone`, {
+    res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -59,13 +62,18 @@ export async function askJev({ baseUrl, apiKey, state, questions, model = DEFAUL
     });
   } catch (err) {
     if (err?.name === 'AbortError') throw err;
-    // fetch() only rejects like this for network-level failures, which in a
-    // browser is almost always CORS or an unreachable host.
+    // fetch() rejects like this only for network-level failures, which in a
+    // browser means CORS or an unreachable host.
     throw new BrowserBlockedError(
-      `Request to ${base} failed before a response arrived. ` +
-        `If you pointed straight at api.typesafe.ai, the browser blocked it: TypeSafe ` +
-        `does not send CORS headers for web origins. Use a proxy URL instead. ` +
-        `(Original error: ${err?.message ?? err})`,
+      usingSameOrigin() && !baseUrl
+        ? `Could not reach ${url}. This page is not being served with an API route, so ` +
+          `the browser blocked or failed the request. Run \`node tools/dev-proxy.mjs\` and ` +
+          `open http://localhost:8787 instead of opening the file directly. ` +
+          `If you are hosting this on a static site, set API_BASE in src/config.js. ` +
+          `(Original error: ${err?.message ?? err})`
+        : `Could not reach ${url}. The proxy did not answer. Check that it is deployed ` +
+          `and that API_BASE in src/config.js is correct. ` +
+          `(Original error: ${err?.message ?? err})`,
       err,
     );
   }
@@ -94,13 +102,11 @@ export async function askJev({ baseUrl, apiKey, state, questions, model = DEFAUL
 }
 
 /** Cheap liveness probe used by the "Test connection" button. */
-export async function testConnection({ baseUrl, apiKey, model = DEFAULT_MODEL }) {
-  const out = await askJev({
-    baseUrl,
+export async function testConnection({ apiKey, model = DEFAULT_MODEL }) {
+  return askJev({
     apiKey,
     model,
     state: 'Connection test.',
     questions: { ok: { type: 'noul', instructions: 'Is this a successful connection test?' } },
   });
-  return out;
 }

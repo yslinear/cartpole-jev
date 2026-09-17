@@ -165,12 +165,49 @@ pre {
 details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 8px; }
 details summary:hover { color: var(--text); }
 
+/* ---------------------------------------------------------------- playbar -- */
+.playbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft);
+}
+.playbar .segmented { flex: 0 1 auto; }
+
+.pushpad { display: flex; gap: 8px; margin-left: auto; }
+
+button.push {
+  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  padding: 10px 16px; border-radius: 9px; letter-spacing: .01em;
+  border: 1px solid var(--border);
+  transition: transform .06s, background .12s, border-color .12s, box-shadow .12s;
+  user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+button.push .key {
+  display: inline-block; min-width: 1.4em; text-align: center;
+  color: var(--muted); font-size: 15px; line-height: 1;
+}
+button.push-left  { background: rgba(201,139,240,.09); border-color: rgba(201,139,240,.32); color: #dcb8f7; }
+button.push-right { background: rgba(90,169,240,.09);  border-color: rgba(90,169,240,.32);  color: #a9d0f7; }
+button.push-left:hover  { background: rgba(201,139,240,.18); }
+button.push-right:hover { background: rgba(90,169,240,.18); }
+button.push.active { transform: translateY(1px); }
+button.push-left.active  { background: var(--left);  border-color: var(--left);  color: #1a0d26; box-shadow: 0 0 0 4px rgba(201,139,240,.18); }
+button.push-right.active { background: var(--right); border-color: var(--right); color: #04202e; box-shadow: 0 0 0 4px rgba(90,169,240,.18); }
+
 /* -------------------------------------------------------------------- stats */
 .stats { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; margin: 0; }
 .stats dt { color: var(--muted); font-size: 12px; }
 .stats dd { margin: 0; font-family: var(--mono); font-size: 12.5px; text-align: right; color: var(--text); }
 .stats dd.good { color: var(--accent); }
 .stats dd.warn { color: var(--warn); }
+.stats dd.you { color: var(--warn); }
+.stats dd.jev { color: var(--accent); }
+
+.stathead {
+  grid-column: 1 / -1; margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--faint);
+}
+.stathead:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 
 /* ---------------------------------------------------------------------- log */
 .loghead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
