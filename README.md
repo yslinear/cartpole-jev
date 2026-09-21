@@ -1,5 +1,7 @@
 # CartPole × Jev
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An inverted pendulum as an instrument for looking closely at **Jev**, TypeSafe's decision model:
 what it is good at, where it stops being good, and how much of the outcome is actually down to
 it rather than to how the problem was framed.
@@ -249,6 +251,8 @@ TYPESAFE_API_KEY=... node test/force-grading.mjs --episodes 3
 ```
 
 ## License
+
+This project is released under the [MIT License](LICENSE).
 
 The CartPole implementation derives from Gymnasium (Farama Foundation), BSD-3-Clause; the equations
 originate in Barto, Sutton & Anderson (1983) via
